@@ -232,7 +232,9 @@ func sessionIsStale() -> Bool {
 }
 func clearSession() { try? FileManager.default.removeItem(at: sessionFile) }
 
-let wakeRegex = try! NSRegularExpression(pattern: #"(?:^|[^a-z])(?:hey|ey|hei|oye|hola|ok|okey|okay)[ ,.]*(?:claude|cloud|clod|clot|claud|clau|klaud|klod|clout|claudio|claudia)(?:[^a-z]|$)"#)
+let wakeRegex = try! NSRegularExpression(pattern: #"(?:^|[^a-z])(?:hey|ey|hei|oye|hola|ok|okey|okay)[ ,.]*(?:icloud|claude|cloud|clod|clot|claud|clau|klaud|klod|clout|claudio|claudia|klaus)(?:[^a-z]|$)"#)
+// El reconocedor a veces separa "Hey" y "Cloud" en trozos distintos: un trozo que empieza por el nombre también activa
+let bareWakeRegex = try! NSRegularExpression(pattern: #"^[ ,.]*(?:icloud|claude|cloud|clau|klaud|klaus)(?:[^a-z]|$)"#)
 // Cierre: solo palabras de despedida/agradecimiento, y al menos una "fuerte"
 let endRegex = try! NSRegularExpression(pattern: #"^(?:(?:ok|okay|okey|bueno|listo|gracias|muchas|claude|clau|cloud|suficiente|eso|es|todo|nada|mas|adios|perfecto|vale|genial|chao|bye|hasta|luego|thanks|thank|you|that's|thats|that|all|done|goodbye|enough|good|great|perfect|cool|alright|it|is)[ ,.!']*)+$"#)
 let endStrongRegex = try! NSRegularExpression(pattern: #"\b(listo|gracias|suficiente|adios|chao|bye|perfecto|vale|genial|luego|todo|nada|thanks|thank|done|goodbye|enough|okay|ok|all|perfect|great|cool)\b"#)
@@ -253,7 +255,8 @@ func matches(_ re: NSRegularExpression, _ s: String) -> Bool {
 func commandAfterWake(_ raw: String) -> String? {
     let norm = normalize(raw)
     let ns = norm as NSString
-    guard let m = wakeRegex.matches(in: norm, range: NSRange(location: 0, length: ns.length)).last else { return nil }
+    guard let m = wakeRegex.matches(in: norm, range: NSRange(location: 0, length: ns.length)).last
+            ?? bareWakeRegex.firstMatch(in: norm, range: NSRange(location: 0, length: ns.length)) else { return nil }
     let end = min(m.range.location + m.range.length, ns.length)
     let source: NSString = ((raw as NSString).length == ns.length) ? (raw as NSString) : ns
     return source.substring(from: end).trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
@@ -1370,6 +1373,12 @@ final class Listener {
     private var configObserver: Any?
     var engineRunning: Bool { engine.isRunning }
 
+    /// Con la cancelación de eco activa el micrófono pierde sensibilidad; la dejamos puesta solo mientras Claude habla.
+    func setEchoActive(_ active: Bool) {
+        guard engine.inputNode.isVoiceProcessingEnabled else { return }
+        if engine.inputNode.isVoiceProcessingBypassed != !active { engine.inputNode.isVoiceProcessingBypassed = !active }
+    }
+
     /// Si cambia el dispositivo de audio (auriculares, AirPods), macOS detiene el motor: lo levantamos de nuevo.
     private func recoverEngine() {
         logApp("Cambió la configuración de audio; reinicio el motor")
@@ -1468,6 +1477,7 @@ final class Listener {
         }
         engine.prepare()
         try engine.start()
+        setEchoActive(false)   // en reposo, micrófono limpio
         if configObserver == nil {
             configObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self?.recoverEngine() }
@@ -2206,6 +2216,7 @@ final class Controller: NSObject {
             self.overlay.logo.level = self.smoothLevel
             self.checkLoudInterrupt()
         }
+        NSAppleScript(source: "set volume input volume 100")?.executeAndReturnError(nil)
         do { try listener.startEngine() } catch { fail("No pude abrir el micrófono: \(error.localizedDescription)"); return }
         listener.restart()
         tick = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in self?.onTick() }
@@ -2357,6 +2368,7 @@ final class Controller: NSObject {
     // MARK: Estados
 
     private func enterListening(followUp: Bool) {
+        listener.setEchoActive(false)
         overlay.showPause(false)
         silent = false
         state = .listening
@@ -2597,6 +2609,7 @@ final class Controller: NSObject {
     private func resetRecognizerText() { rawNow = ""; rawByLang = [:]; lastRawText = "" }
 
     private func beginStreamingSpeech() {
+        listener.setEchoActive(true)
         resetRecognizerText()
         if Date().timeIntervalSince(listener.lastRestart) > 1.5 { listener.restart() }
         state = .speaking
@@ -2662,6 +2675,7 @@ final class Controller: NSObject {
     }
 
     private func speak(_ text: String, thenIdle: Bool) {
+        listener.setEchoActive(true)
         resetRecognizerText()
         if silent {
             streamText = text
@@ -2735,6 +2749,7 @@ final class Controller: NSObject {
     }
 
     private func goIdle(immediate: Bool = false) {
+        listener.setEchoActive(false)
         overlay.showPause(false)
         speakWatchdog?.cancel()
         rawNow = ""
