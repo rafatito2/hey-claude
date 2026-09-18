@@ -55,7 +55,7 @@ Contexto personal del usuario. Tiene prioridad sobre cualquier interpretación l
 $(cat "$DIR/contexto.md")"
 fi
 
-ALLOWED='Bash,Read,Glob,Grep,Write,Edit,WebSearch,WebFetch,mcp__claude-in-chrome__*'
+ALLOWED='Bash(open:*),Bash(osascript:*),Bash(say:*),Bash(ps:*),Bash(top:*),Bash(df:*),Bash(du:*),Bash(pmset:*),Bash(uptime:*),Bash(date:*),Bash(cal:*),Bash(ls:*),Bash(find:*),Bash(mdfind:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(grep:*),Bash(wc:*),Bash(system_profiler:*),Bash(sw_vers:*),Bash(mkdir:*),Bash(touch:*),Bash(cp:*),Bash(echo:*),Read,Glob,Grep,Write(~/Desktop/**),Write(~/Documents/**),Edit(~/Desktop/**),Edit(~/Documents/**),Edit(~/claude-voice/contexto.md),WebSearch,WebFetch,mcp__claude-in-chrome__*'
 DISALLOWED='Bash(rm:*),Bash(rm -rf:*),Bash(rmdir:*),Bash(srm:*),Bash(sudo:*),Bash(su:*),Bash(dd:*),Bash(mkfs:*),Bash(diskutil:*),Bash(shutdown:*),Bash(reboot:*),Bash(halt:*),Bash(launchctl:*),Bash(killall:*),Bash(pkill:*),Bash(kill:*),Bash(chmod:*),Bash(chown:*),Bash(defaults delete:*),Bash(git push:*),Bash(git reset:*),Bash(security:*)'
 
 echo "[$(date '+%F %T')] > $TEXT" >> "$LOG"

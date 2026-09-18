@@ -17,3 +17,4 @@ recordatorios.json
 *.plist
 !app/Info.plist
 .DS_Store
+.pantalla.jpg

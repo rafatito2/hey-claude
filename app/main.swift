@@ -33,7 +33,18 @@ let claudeBin: String = {
     return "claude"
 }()
 
-let allowedTools = "Bash,Read,Glob,Grep,Write,Edit,WebSearch,WebFetch,mcp__claude-in-chrome__*,mcp__claude_ai_Gmail__*,mcp__claude_ai_Google_Calendar__*"
+// Lista blanca: solo estos prefijos de comando, y escritura de archivos solo en Escritorio, Documentos y el contexto personal.
+let allowedTools = [
+    "Bash(open:*)", "Bash(osascript:*)", "Bash(say:*)", "Bash(screencapture:*)",
+    "Bash(ps:*)", "Bash(top:*)", "Bash(df:*)", "Bash(du:*)", "Bash(pmset:*)", "Bash(uptime:*)", "Bash(date:*)", "Bash(cal:*)",
+    "Bash(ls:*)", "Bash(find:*)", "Bash(mdfind:*)", "Bash(cat:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(grep:*)", "Bash(wc:*)", "Bash(file:*)", "Bash(stat:*)",
+    "Bash(system_profiler:*)", "Bash(sw_vers:*)", "Bash(networksetup -get*)", "Bash(ifconfig:*)", "Bash(ping -c:*)", "Bash(defaults read:*)",
+    "Bash(mkdir:*)", "Bash(touch:*)", "Bash(cp:*)", "Bash(pbpaste:*)", "Bash(pbcopy:*)", "Bash(echo:*)", "Bash(printf:*)",
+    "Bash(git status:*)", "Bash(git log:*)", "Bash(git diff:*)",
+    "Read", "Glob", "Grep",
+    "Write(~/Desktop/**)", "Write(~/Documents/**)", "Edit(~/Desktop/**)", "Edit(~/Documents/**)", "Edit(~/claude-voice/contexto.md)", "Write(~/claude-voice/contexto.md)",
+    "WebSearch", "WebFetch", "mcp__claude-in-chrome__*", "mcp__claude_ai_Gmail__*", "mcp__claude_ai_Google_Calendar__*",
+].joined(separator: ",")
 // Lo que nunca puede hacer por voz, aunque se lo pidas
 let disallowedTools = "Bash(rm:*),Bash(rm -rf:*),Bash(rmdir:*),Bash(srm:*),Bash(sudo:*),Bash(su:*),Bash(dd:*),Bash(mkfs:*),Bash(diskutil:*),Bash(shutdown:*),Bash(reboot:*),Bash(halt:*),Bash(launchctl:*),Bash(killall:*),Bash(pkill:*),Bash(kill:*),Bash(chmod:*),Bash(chown:*),Bash(defaults delete:*),Bash(git push:*),Bash(git reset:*),Bash(security:*),mcp__claude_ai_Gmail__send_message,mcp__claude_ai_Gmail__forward,mcp__claude_ai_Gmail__reply,mcp__claude_ai_Gmail__trash_message,mcp__claude_ai_Gmail__trash_thread,mcp__claude_ai_Gmail__delete_label,mcp__claude_ai_Gmail__mark_message_spam,mcp__claude_ai_Gmail__mark_thread_spam"
 
@@ -44,7 +55,7 @@ Reglas:
 - Si te piden abrir una app usa: open -a "Nombre". Si te piden una página web usa: open -a "Google Chrome" "https://...".
 - Si te piden hacer algo dentro de una página (buscar, leer, llenar), usa las herramientas de Chrome.
 - Para acciones del sistema (volumen, música, etc.) usa osascript. Para preguntas sobre la Mac (procesos, CPU, memoria, disco, batería, red, archivos) usa comandos como ps, top -l 1, df, du, system_profiler, pmset, ls, find.
-- Puedes crear y editar archivos (por ejemplo documentos en el Escritorio), pero nunca borrar nada.
+- Puedes crear y editar archivos solo en el Escritorio y en Documentos; nunca borrar nada. Si una acción no está permitida, dilo en una frase en vez de buscar otra forma de hacerla.
 - Para correo usa las herramientas de Gmail (buscar, leer, crear borradores; no puedes enviar). Para agenda usa Google Calendar.
 - Memoria personal: sé proactivo. Cuando en la conversación aparezca un dato duradero del usuario (nombre, carrera o universidad, materias, trabajo, intereses, correos, personas cercanas, apps o sitios que usa, preferencias) y no esté ya en el contexto personal, agrégalo como UNA línea corta que empiece con "- " al final de \(contextFile.path) usando Edit. No guardes cosas pasajeras ni repitas lo que ya está. No hace falta anunciarlo salvo que el usuario te lo haya pedido.
 - Habla como en una conversación: frases cortas, la primera frase debe ser útil por sí sola porque se lee en voz alta apenas la escribes.
@@ -164,6 +175,15 @@ func appendLine(_ file: URL, _ s: String) {
 func logConv(_ s: String) { appendLine(logFile, s) }
 func logApp(_ s: String) { appendLine(appLogFile, s) }
 
+/// Recorta app.log al arrancar para que no crezca sin límite (conserva la última parte).
+func rotateAppLog(maxBytes: Int = 512 * 1024, keep: Int = 256 * 1024) {
+    guard let attrs = try? FileManager.default.attributesOfItem(atPath: appLogFile.path),
+          let size = attrs[.size] as? Int, size > maxBytes,
+          let data = try? Data(contentsOf: appLogFile) else { return }
+    let tail = data.suffix(keep)
+    if let nl = tail.firstIndex(of: 10) { try? Data(tail[(nl + 1)...]).write(to: appLogFile) }
+}
+
 func normalize(_ s: String) -> String {
     s.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil).lowercased()
 }
@@ -184,7 +204,10 @@ func sessionIsStale() -> Bool {
 func clearSession() { try? FileManager.default.removeItem(at: sessionFile) }
 
 let wakeRegex = try! NSRegularExpression(pattern: #"(?:^|[^a-z])(?:hey|ey|hei|oye|hola|ok|okey|okay)[ ,.]*(?:claude|cloud|clod|clot|claud|clau|klaud|klod|clout|claudio|claudia)(?:[^a-z]|$)"#)
-let endRegex = try! NSRegularExpression(pattern: #"^(?:(?:ok|okay|okey|bueno|ya|listo|gracias|muchas|claude|clau|cloud|suficiente|eso|es|todo|nada|mas|adios|basta|para|esta|bien|perfecto|vale|chao|bye|termina|terminar|hasta|luego|con|eso|thanks|thank|you|that's|thats|that|all|done|goodbye|enough|stop|good|great|perfect|cool|it|is|fine|alright|right|got|sure|nice)[ ,.!']*)+$"#)
+// Cierre: solo palabras de despedida/agradecimiento, y al menos una "fuerte"
+let endRegex = try! NSRegularExpression(pattern: #"^(?:(?:ok|okay|okey|bueno|listo|gracias|muchas|claude|clau|cloud|suficiente|eso|es|todo|nada|mas|adios|perfecto|vale|genial|chao|bye|hasta|luego|thanks|thank|you|that's|thats|that|all|done|goodbye|enough|good|great|perfect|cool|alright|it|is)[ ,.!']*)+$"#)
+let endStrongRegex = try! NSRegularExpression(pattern: #"\b(listo|gracias|suficiente|adios|chao|bye|perfecto|vale|genial|luego|todo|nada|thanks|thank|done|goodbye|enough|okay|ok|all|perfect|great|cool)\b"#)
+let onlyStopRegex = try! NSRegularExpression(pattern: #"^(?:(?:para|stop|espera|alto|basta|callate|silencio|wait|quiet|hold on|ya)[ ,.!]*)+$"#)
 let newConvRegex = try! NSRegularExpression(pattern: #"^(nueva conversacion|empezar de nuevo|reinicia|reiniciar|borra la conversacion|new conversation|start over|reset)"#)
 let memoryRegex = try! NSRegularExpression(pattern: #"^(recuerda|recuerdate|acuerdate|apunta|anota|ten en cuenta|guarda en memoria|memoriza|remember|keep in mind|note)( que | esto:? | that | this:? | )(.+)$"#)
 let screenRegex = try! NSRegularExpression(pattern: #"\b(pantalla|en mi pantalla|lo que veo|esto que veo|este error|esta grafica|esta imagen|esta ventana|screen|on my screen|what i'm looking at|this error|this chart|this window)\b"#)
@@ -207,12 +230,20 @@ func commandAfterWake(_ raw: String) -> String? {
     return source.substring(from: end).trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
 }
 
+private var regexCache: [String: NSRegularExpression] = [:]
+/// Regex compilada una sola vez por patrón.
+func rx(_ pattern: String) -> NSRegularExpression {
+    if let r = regexCache[pattern] { return r }
+    let r = try! NSRegularExpression(pattern: pattern)
+    regexCache[pattern] = r
+    return r
+}
+
 func toolLabel(_ name: String, _ input: [String: Any]) -> String {
     if name == "Bash" {
         let cmd = input["command"] as? String ?? ""
         if cmd.hasPrefix("open") {
-            if let re = try? NSRegularExpression(pattern: #"-a\s+"?([^"]+?)"?(?:\s|$)"#),
-               let m = re.firstMatch(in: cmd, range: NSRange(location: 0, length: (cmd as NSString).length)) {
+            if let m = rx(#"-a\s+"?([^"]+?)"?(?:\s|$)"#).firstMatch(in: cmd, range: NSRange(location: 0, length: (cmd as NSString).length)) {
                 let app = (cmd as NSString).substring(with: m.range(at: 1))
                 return cmd.contains("http") ? "Abriendo página en \(app)…" : "Abriendo \(app)…"
             }
@@ -293,17 +324,15 @@ func parseReminder(_ n: String) -> (Date, String, String)? {
     if let r = parseReminderEnglish(n) { return r }
     let ns = n as NSString
     func m(_ pattern: String) -> NSTextCheckingResult? {
-        (try? NSRegularExpression(pattern: pattern))?.firstMatch(in: n, range: NSRange(location: 0, length: ns.length))
+        rx(pattern).firstMatch(in: n, range: NSRange(location: 0, length: ns.length))
     }
     func g(_ r: NSTextCheckingResult, _ i: Int) -> String { r.range(at: i).location == NSNotFound ? "" : ns.substring(with: r.range(at: i)) }
     let lead = #"^(?:recuerdame|recuerda|avisame|ponme un recordatorio|pon un recordatorio|pon una alarma|ponme una alarma|alarma|recordatorio)(?: que| de| para)?\s*"#
     let dur = #"(?:en|dentro de|por|de)\s+(\S+)\s*(?:y media)?\s+(segundos?|minutos?|min|horas?|hora)"#
     // "... en N minutos <texto>"  o  "... <texto> en N minutos"
     if let r = m(lead + dur + #"\s*(?:que|de|para)?\s*(.*)$"#) ?? m(lead + #"(.*?)\s+"# + dur + "$") {
-        let isFirst = r.numberOfRanges == 4 && g(r, 3) != "" || (r.numberOfRanges == 4 && parseNumber(g(r, 1)) != nil)
         var numStr: String, unit: String, text: String
         if parseNumber(g(r, 1)) != nil { numStr = g(r, 1); unit = g(r, 2); text = g(r, 3) } else { text = g(r, 1); numStr = g(r, 2); unit = g(r, 3) }
-        _ = isFirst
         guard let num = parseNumber(numStr) else { return nil }
         let secs: Double = unit.hasPrefix("seg") ? Double(num) : unit.hasPrefix("hora") ? Double(num) * 3600 : Double(num) * 60
         let extra: Double = n.contains("y media") && unit.hasPrefix("hora") ? 1800 : 0
@@ -328,6 +357,7 @@ func parseReminder(_ n: String) -> (Date, String, String)? {
         if whole.contains("y media") { minute = 30 } else if whole.contains("y cuarto") { minute = 15 }
         let period = g(r, 4)
         if (period == "tarde" || period == "noche") && hour < 12 { hour += 12 }
+        if period == "noche" && hour == 12 { hour = 0 }
         var comps = Calendar.current.dateComponents([.year, .month, .day], from: Date())
         comps.hour = hour; comps.minute = minute; comps.second = 0
         guard var when = Calendar.current.date(from: comps) else { return nil }
@@ -345,7 +375,7 @@ func parseReminder(_ n: String) -> (Date, String, String)? {
 func parseReminderEnglish(_ n: String) -> (Date, String, String)? {
     let ns = n as NSString
     func m(_ pattern: String) -> NSTextCheckingResult? {
-        (try? NSRegularExpression(pattern: pattern))?.firstMatch(in: n, range: NSRange(location: 0, length: ns.length))
+        rx(pattern).firstMatch(in: n, range: NSRange(location: 0, length: ns.length))
     }
     func g(_ r: NSTextCheckingResult, _ i: Int) -> String { r.range(at: i).location == NSNotFound ? "" : ns.substring(with: r.range(at: i)) }
     func secs(_ num: Int, _ unit: String) -> (Double, String) {
@@ -418,7 +448,7 @@ final class LogoView: NSView {
         super.init(frame: frame)
         wantsLayer = true
         timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
-            guard let self else { return }
+            guard let self, let w = self.window, w.isVisible, w.alphaValue > 0 else { return }
             self.phase += 0.09
             self.needsDisplay = true
         }
@@ -601,6 +631,9 @@ final class Overlay: NSObject {
         pauseButton.imagePosition = .imageOnly
         pauseButton.toolTip = "Pausar"
         pauseButton.isHidden = true
+        if let img = NSImage(systemSymbolName: "stop.circle.fill", accessibilityDescription: "Interrumpir") {
+            pauseButton.image = img.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 22, weight: .medium))
+        } else { pauseButton.title = "■" }
         effect.addSubview(pauseButton)
 
         tapButton.isBordered = false
@@ -615,7 +648,6 @@ final class Overlay: NSObject {
         stopButton.action = #selector(stopPressed)
         pauseButton.target = self
         pauseButton.action = #selector(pausePressed)
-        setPaused(false)
         tapButton.target = self
         tapButton.action = #selector(tapped)
         NotificationCenter.default.addObserver(forName: NSWindow.didMoveNotification, object: panel, queue: .main) { [weak self] _ in self?.savePosition() }
@@ -624,17 +656,6 @@ final class Overlay: NSObject {
 
     @objc private func stopPressed() { onStop?() }
     @objc private func pausePressed() { onPause?() }
-
-    /// Botón ■ de interrupción (como en la app de Claude).
-    func setPaused(_ paused: Bool) {
-        if let img = NSImage(systemSymbolName: "stop.circle.fill", accessibilityDescription: "Interrumpir") {
-            pauseButton.image = img.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 22, weight: .medium))
-            pauseButton.contentTintColor = fg.withAlphaComponent(0.6)
-        } else {
-            pauseButton.title = "■"
-        }
-        pauseButton.toolTip = "Interrumpir"
-    }
 
     func showPause(_ show: Bool) { pauseButton.isHidden = !show || isCompact }
 
@@ -947,7 +968,6 @@ final class SettingsWindow: NSObject {
     private let themeCheck = NSButton(checkboxWithTitle: "Tema claro", target: nil, action: nil)
     private let indicatorCheck = NSButton(checkboxWithTitle: "Indicador pequeño en reposo", target: nil, action: nil)
     private let soundCheck = NSButton(checkboxWithTitle: "Sonido al enviar una orden", target: nil, action: nil)
-    private let englishCheck = NSButton(checkboxWithTitle: "Entender también inglés (experimental, usa más CPU)", target: nil, action: nil)
     private let listenKeyPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let typeKeyPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let modelPopups: [String: NSPopUpButton] = ["simple": NSPopUpButton(), "normal": NSPopUpButton(), "profundo": NSPopUpButton()]
@@ -1001,7 +1021,6 @@ final class SettingsWindow: NSObject {
         themeCheck.target = self; themeCheck.action = #selector(themeChanged)
         indicatorCheck.target = self; indicatorCheck.action = #selector(indicatorChanged)
         soundCheck.target = self; soundCheck.action = #selector(soundChanged)
-        englishCheck.target = self; englishCheck.action = #selector(englishChanged)
 
         for p in [listenKeyPopup, typeKeyPopup] {
             p.addItems(withTitles: Controller.hotkeyPresets.map { $0.0 })
@@ -1095,10 +1114,6 @@ final class SettingsWindow: NSObject {
 
         let tiers = loadModelTiers()
         let idx = ["haiku": 0, "sonnet": 1, "opus": 2, "default": 3]
-        for p in [listenKeyPopup, typeKeyPopup] {
-            p.addItems(withTitles: Controller.hotkeyPresets.map { $0.0 })
-            p.target = self; p.action = #selector(hotkeyChanged(_:))
-        }
         for (k, p) in modelPopups { p.selectItem(at: idx[tiers[k] ?? "default"] ?? 3) }
     }
 
@@ -1135,10 +1150,6 @@ final class SettingsWindow: NSObject {
     @objc private func indicatorChanged() {
         UserDefaults.standard.set(indicatorCheck.state == .on, forKey: "idleIndicator")
         controller?.refreshIdleIndicator()
-    }
-    @objc private func englishChanged() {
-        UserDefaults.standard.set(englishCheck.state == .on, forKey: "englishEnabled")
-        controller?.listener.restart()
     }
     @objc private func soundChanged() {
         UserDefaults.standard.set(soundCheck.state == .on, forKey: "sendSound")
@@ -1299,10 +1310,8 @@ final class HistoryWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate,
 
 final class Listener {
     private let engine = AVAudioEngine()
-    private let allRecognizers: [(String, SFSpeechRecognizer?)] = [("es", SFSpeechRecognizer(locale: Locale(identifier: "es-US"))), ("en", SFSpeechRecognizer(locale: Locale(identifier: "en-US")))]
-    private var recognizers: [(String, SFSpeechRecognizer?)] {
-        UserDefaults.standard.bool(forKey: "englishEnabled") ? allRecognizers : Array(allRecognizers.prefix(1))
-    }
+    // Un solo reconocedor (es-US entiende también inglés). Dos a la vez no conviven en macOS.
+    private let recognizers: [(String, SFSpeechRecognizer?)] = [("es", SFSpeechRecognizer(locale: Locale(identifier: "es-US")))]
     private var taskStart: [String: Date] = [:]
     private var restartPending = false
     private var requests: [String: SFSpeechAudioBufferRecognitionRequest] = [:]
@@ -1321,17 +1330,18 @@ final class Listener {
     private var lastPeakLog = Date()
 
     private var playerAttached = false
+    private var configObserver: Any?
+    var engineRunning: Bool { engine.isRunning }
 
-    private(set) var echoOn = false
-
-    /// Enciende o apaga la cancelación de eco reiniciando el motor (bloquea ~1-2 s).
-    func setEcho(_ on: Bool) {
-        guard on != echoOn else { return }
+    /// Si cambia el dispositivo de audio (auriculares, AirPods), macOS detiene el motor: lo levantamos de nuevo.
+    private func recoverEngine() {
+        logApp("Cambió la configuración de audio; reinicio el motor")
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
-        do { try startEngine(echo: on) }
+        engine.reset()
+        do { try startEngine(echo: useEchoCancellation) }
         catch {
-            logApp("No pude cambiar la cancelación de eco a \(on): \(error.localizedDescription)")
+            logApp("No pude reiniciar con cancelación de eco (\(error.localizedDescription)); reintento sin ella")
             engine.stop(); engine.inputNode.removeTap(onBus: 0)
             try? engine.inputNode.setVoiceProcessingEnabled(false)
             try? startEngine(echo: false)
@@ -1356,7 +1366,6 @@ final class Listener {
         if !playerAttached { beforeStart?(engine); playerAttached = true }
         _ = engine.mainMixerNode
         // Cancelación de eco de Apple: entrega muchos canales; usamos solo el canal 0.
-        echoOn = false
         if input.isVoiceProcessingEnabled != echo { try input.setVoiceProcessingEnabled(echo) }
         var format = input.outputFormat(forBus: 0)
         if echo {
@@ -1364,7 +1373,7 @@ final class Listener {
             if #available(macOS 14.0, *) {
                 input.voiceProcessingOtherAudioDuckingConfiguration = AVAudioVoiceProcessingOtherAudioDuckingConfiguration(enableAdvancedDucking: true, duckingLevel: .default)
             }
-            if format.sampleRate > 0 && format.channelCount > 0 { echoOn = true; logApp(String(format: "Cancelación de eco activa (%d canales, %.0f Hz)", format.channelCount, format.sampleRate)) }
+            if format.sampleRate > 0 && format.channelCount > 0 { logApp(String(format: "Cancelación de eco activa (%d canales, %.0f Hz)", format.channelCount, format.sampleRate)) }
             else { try input.setVoiceProcessingEnabled(false); format = input.outputFormat(forBus: 0); logApp("Cancelación de eco no usable, desactivada") }
         } else {
             logApp("Micrófono en modo normal")
@@ -1373,6 +1382,9 @@ final class Listener {
               let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false),
               let converter = AVAudioConverter(from: mono48, to: target) else {
             throw NSError(domain: "ClaudeVoice", code: 1, userInfo: [NSLocalizedDescriptionKey: "No pude crear el conversor de audio"])
+        }
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            throw NSError(domain: "ClaudeVoice", code: 2, userInfo: [NSLocalizedDescriptionKey: "No hay micrófono disponible"])
         }
         logApp(String(format: "Entrada: %.0f Hz x %d canales -> mono 16 kHz", format.sampleRate, format.channelCount))
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buf, _ in
@@ -1419,6 +1431,11 @@ final class Listener {
         }
         engine.prepare()
         try engine.start()
+        if configObserver == nil {
+            configObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self?.recoverEngine() }
+            }
+        }
         logApp("Motor de audio iniciado. Reconocimiento local: \(recognizer?.supportsOnDeviceRecognition ?? false)")
     }
 
@@ -1449,7 +1466,11 @@ final class Listener {
                 if let result {
                     let text = result.bestTranscription.formattedString
                     if debugText { logApp("oí[\(lang)]: \(text)") }
-                    DispatchQueue.main.async { self.onText?(text, lang) }
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self else { return }
+                        self.lock.lock(); let fresh = (gen == self.generation); self.lock.unlock()
+                        if fresh { self.onText?(text, lang) }
+                    }
                 }
                 if let error {
                     let ns = error as NSError
@@ -1510,6 +1531,7 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
     private var queued = 0                       // locuciones encoladas o sonando
     private var generation = 0
     private var highlightTimer: Timer?
+    private var highlightOwner: AnyObject? = nil
     var onFinish: (() -> Void)?
     var onRange: ((NSRange) -> Void)?
     var isSpeaking: Bool { queued > 0 }
@@ -1594,9 +1616,14 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
     }
 
     func speak(_ text: String, offset: Int = 0) {
+        guard let eng = player.engine, eng.isRunning else {
+            logApp("No puedo hablar: el motor de audio no está corriendo")
+            DispatchQueue.main.async { [weak self] in self?.onFinish?() }
+            return
+        }
         pending.append((text, offset))
         queued += 1
-        if !player.isPlaying && !isPaused { player.play() }
+        if !player.isPlaying { player.play() }
         writeNext()
     }
 
@@ -1607,13 +1634,7 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
         writing = false
         current = nil
         idleTimer?.invalidate(); idleTimer = nil
-        pendingHighlight = nil
-        pendingFinish = nil
-        deadlines.removeAll()
-        deadlineTimer?.invalidate(); deadlineTimer = nil
-        highlightParams = nil
-        isPaused = false
-        pauseStart = nil
+        finishTimers.forEach { $0.invalidate() }; finishTimers.removeAll()
         queued = 0
         player.stop()
         highlightTimer?.invalidate(); highlightTimer = nil
@@ -1650,6 +1671,7 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
         var written = false
         var finished = false
         var first = true
+        var utterance: AVSpeechUtterance? = nil
         init(text: String, offset: Int, gen: Int) { self.text = text; self.offset = offset; self.gen = gen }
     }
     private var current: Utt? = nil
@@ -1664,6 +1686,15 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
         let u = AVSpeechUtterance(string: text)
         u.voice = textLanguage(text) == "en" ? (voiceEN ?? voice) : voice
         u.rate = rate
+        utt.utterance = u
+        // Si la síntesis no entrega nada en 3 s, damos la locución por escrita para no bloquear la cola
+        idleTimer?.invalidate()
+        let first = Timer(timeInterval: 3.0, repeats: false) { [weak self] _ in
+            logApp("La síntesis de voz no entregó audio; salto la frase")
+            self?.finishWrite(utt)
+        }
+        RunLoop.main.add(first, forMode: .common)
+        idleTimer = first
         synth.write(u) { [weak self] buf in
             guard let self else { return }
             DispatchQueue.main.async {
@@ -1707,7 +1738,6 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
         queued = max(0, queued - 1)
         if highlightOwner === utt {
             highlightTimer?.invalidate(); highlightTimer = nil
-            highlightParams = nil
             highlightOwner = nil
         }
         if debugText { logApp("locución terminada") }
@@ -1736,68 +1766,24 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
     }
 
     // Delegado: el sistema avisa cuando terminó de generar la locución
-    func speechSynthesizer(_ s: AVSpeechSynthesizer, didFinish u: AVSpeechUtterance) { DispatchQueue.main.async { if let c = self.current { self.finishWrite(c) } } }
-    func speechSynthesizer(_ s: AVSpeechSynthesizer, didCancel u: AVSpeechUtterance) { DispatchQueue.main.async { if let c = self.current { self.finishWrite(c) } } }
+    func speechSynthesizer(_ s: AVSpeechSynthesizer, didFinish u: AVSpeechUtterance) { DispatchQueue.main.async { if let c = self.current, c.utterance === u { self.finishWrite(c) } } }
+    func speechSynthesizer(_ s: AVSpeechSynthesizer, didCancel u: AVSpeechUtterance) { DispatchQueue.main.async { if let c = self.current, c.utterance === u { self.finishWrite(c) } } }
 
-    private var pendingHighlight: (String, Int, Double)? = nil
-    private var pendingFinish: ((Date) -> Void)? = nil
-
-    // Agenda de plazos (fin de cada locución) que se puede pausar y desplazar
-    private var deadlines: [(Date, () -> Void)] = []
-    private var deadlineTimer: Timer?
-    private(set) var isPaused = false
-    private var pauseStart: Date?
-    private var highlightParams: (String, Int, Double, Date)? = nil
-    private var highlightOwner: AnyObject? = nil
-
+    private var finishTimers: [Timer] = []
     private func schedule(at date: Date, _ action: @escaping () -> Void) {
-        deadlines.append((date, action))
-        rearm()
-    }
-    private func rearm() {
-        deadlineTimer?.invalidate(); deadlineTimer = nil
-        guard !isPaused, let next = deadlines.min(by: { $0.0 < $1.0 }) else { return }
-        let t = Timer(timeInterval: max(0.01, next.0.timeIntervalSinceNow), repeats: false) { [weak self] _ in self?.fireDue() }
+        let t = Timer(timeInterval: max(0.01, date.timeIntervalSinceNow), repeats: false) { _ in action() }
         RunLoop.main.add(t, forMode: .common)
-        deadlineTimer = t
-    }
-    private func fireDue() {
-        let now = Date()
-        let due = deadlines.filter { $0.0 <= now }
-        deadlines.removeAll { $0.0 <= now }
-        due.forEach { $0.1() }
-        rearm()
-    }
-
-    func pause() {
-        guard !isPaused, queued > 0 else { return }
-        isPaused = true
-        pauseStart = Date()
-        player.pause()
-        deadlineTimer?.invalidate(); deadlineTimer = nil
-        highlightTimer?.invalidate(); highlightTimer = nil
-    }
-
-    func resume() {
-        guard isPaused, let ps = pauseStart else { return }
-        let d = Date().timeIntervalSince(ps)
-        isPaused = false
-        pauseStart = nil
-        deadlines = deadlines.map { ($0.0.addingTimeInterval(d), $0.1) }
-        if let hp = highlightParams { startHighlight(text: hp.0, offset: hp.1, total: hp.2, since: hp.3.addingTimeInterval(d)) }
-        player.play()
-        rearm()
+        finishTimers.append(t)
+        finishTimers.removeAll { !$0.isValid }
     }
 
     /// Resalta palabra por palabra de forma proporcional al tiempo de la locución.
     private func startHighlight(text: String, offset: Int, total: Double, since: Date) {
         highlightTimer?.invalidate()
-        highlightParams = (text, offset, total, since)
         if debugText { logApp(String(format: "resaltado: %.1f s para %d caracteres (offset %d)", total, (text as NSString).length, offset)) }
         guard total > 0 else { return }
         let ns = text as NSString
-        guard let re = try? NSRegularExpression(pattern: #"\S+"#) else { return }
-        let words = re.matches(in: text, range: NSRange(location: 0, length: ns.length)).map { $0.range }
+        let words = rx(#"\S+"#).matches(in: text, range: NSRange(location: 0, length: ns.length)).map { $0.range }
         guard !words.isEmpty else { return }
         var lastIdx = -1
         let t = Timer(timeInterval: 0.08, repeats: true) { [weak self] timer in
@@ -1815,85 +1801,6 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
         }
         RunLoop.main.add(t, forMode: .common)
         highlightTimer = t
-    }
-}
-
-// MARK: - Claude Code
-
-final class ClaudeRunner {
-    private var process: Process?
-
-    func cancel() {
-        if let p = process, p.isRunning { p.terminate() }
-        process = nil
-    }
-
-    func run(_ text: String, model: String?, onStatus: @escaping (String) -> Void, onText: @escaping (String) -> Void, completion: @escaping (_ reply: String?, _ error: Bool, _ resumed: Bool) -> Void) {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: claudeBin)
-        var args = ["-p", text, "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--chrome",
-                    "--allowedTools", allowedTools, "--disallowedTools", disallowedTools,
-                    "--append-system-prompt", systemPrompt()]
-        if let model, !model.isEmpty { args += ["--model", model] }
-        var resumed = false
-        var newSession: String? = nil
-        if let sid = readSession() { args += ["--resume", sid]; resumed = true }
-        else { let sid = UUID().uuidString.lowercased(); args += ["--session-id", sid]; newSession = sid }
-        p.arguments = args
-        p.currentDirectoryURL = baseDir
-        var env = ProcessInfo.processInfo.environment
-        env["PATH"] = "\(homeDir.path)/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-        p.environment = env
-        let out = Pipe(), err = Pipe()
-        p.standardOutput = out
-        p.standardError = err
-        do { try p.run() } catch {
-            logApp("No pude lanzar claude: \(error)")
-            completion(nil, true, resumed); return
-        }
-        process = p
-        DispatchQueue.global(qos: .userInitiated).async {
-            let h = out.fileHandleForReading
-            var buffer = Data()
-            var reply: String? = nil
-            var isError = false
-            while true {
-                let d = h.availableData
-                if d.isEmpty { break }
-                buffer.append(d)
-                while let nl = buffer.firstIndex(of: 10) {
-                    let line = Data(buffer[buffer.startIndex..<nl])
-                    buffer = Data(buffer[(nl + 1)...])
-                    guard let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
-                          let type = obj["type"] as? String else { continue }
-                    if type == "stream_event", let ev = obj["event"] as? [String: Any],
-                       (ev["type"] as? String) == "content_block_delta",
-                       let delta = ev["delta"] as? [String: Any], (delta["type"] as? String) == "text_delta",
-                       let t = delta["text"] as? String, !t.isEmpty {
-                        DispatchQueue.main.async { onText(t) }
-                    } else if type == "assistant", let msg = obj["message"] as? [String: Any],
-                       let content = msg["content"] as? [[String: Any]] {
-                        for block in content where (block["type"] as? String) == "tool_use" {
-                            let name = block["name"] as? String ?? ""
-                            let input = block["input"] as? [String: Any] ?? [:]
-                            let label = toolLabel(name, input)
-                            DispatchQueue.main.async { onStatus(label) }
-                        }
-                    } else if type == "result" {
-                        reply = obj["result"] as? String
-                        isError = (obj["is_error"] as? Bool) ?? false
-                    }
-                }
-            }
-            p.waitUntilExit()
-            let errData = err.fileHandleForReading.readDataToEndOfFile()
-            if let e = String(data: errData, encoding: .utf8), !e.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                logApp("claude stderr: \(e.prefix(800))")
-            }
-            let failed = isError || p.terminationStatus != 0 || reply == nil
-            if !failed, let s = newSession { writeSession(s) }
-            DispatchQueue.main.async { completion(reply, failed, resumed) }
-        }
     }
 }
 
@@ -1935,7 +1842,7 @@ final class Earcons {
     }
 
     private func play(_ buf: AVAudioPCMBuffer?) {
-        guard attached, let buf else { return }
+        guard attached, let buf, let eng = player.engine, eng.isRunning else { return }
         if !player.isPlaying { player.play() }
         player.scheduleBuffer(buf)
     }
@@ -1962,6 +1869,7 @@ final class PersistentClaude {
     }
     private var turn: Turn?
     private var generation = 0
+    private(set) var lastFailureWasExit = false
     var isRunning: Bool { process?.isRunning ?? false }
     var currentModel: String? { model }
 
@@ -1984,6 +1892,7 @@ final class PersistentClaude {
             let sid = UUID().uuidString.lowercased()
             args += ["--session-id", sid]
             writeSession(sid)
+            touchSessionTime()
             logConv("--- sesión \(sid) ---")
         }
         p.arguments = args
@@ -2004,7 +1913,7 @@ final class PersistentClaude {
                 guard let self, gen == self.generation else { return }
                 logApp("El proceso de Claude terminó (código \(proc.terminationStatus))")
                 self.process = nil; self.stdinHandle = nil
-                if let t = self.turn { self.turn = nil; t.completion(t.reply, true) }
+                if let t = self.turn { self.turn = nil; self.lastFailureWasExit = true; t.completion(t.reply, true) }
             }
         }
         do { try p.run() } catch { logApp("No pude lanzar claude: \(error)"); return }
@@ -2036,7 +1945,13 @@ final class PersistentClaude {
     func stop() {
         if process != nil { logApp("Apago el proceso de Claude Code") }
         generation += 1
-        if let p = process, p.isRunning { p.terminate() }
+        if let t = turn { turn = nil; t.completion(t.reply, true) }
+        try? stdinHandle?.close()
+        if let p = process, p.isRunning {
+            p.terminate()
+            let pid = p.processIdentifier
+            DispatchQueue.global().asyncAfter(deadline: .now() + 3) { kill(pid, SIGKILL) }
+        }
         process = nil
         stdinHandle = nil
     }
@@ -2085,6 +2000,7 @@ final class PersistentClaude {
         } else if type == "result" {
             let reply = obj["result"] as? String
             let failed = (obj["is_error"] as? Bool) ?? false
+            if failed { lastFailureWasExit = false; logApp("Claude devolvió error: \((reply ?? "").prefix(200))") }
             if let t = turn { turn = nil; t.completion(reply, failed) }
         }
     }
@@ -2092,12 +2008,11 @@ final class PersistentClaude {
 
 // MARK: - Controlador principal
 
-final class Controller: NSObject, NSMenuDelegate {
+final class Controller: NSObject {
     enum State { case idle, listening, thinking, speaking }
     let overlay = Overlay()
     let listener = Listener()
     let speaker = Speaker()
-    let runner = ClaudeRunner()
     let claude = PersistentClaude()
     let earcons = Earcons()
     let media = MediaControl()
@@ -2111,7 +2026,6 @@ final class Controller: NSObject, NSMenuDelegate {
     private var remindersLine: NSMenuItem!
     private var listenMenuItem: NSMenuItem?
     private var typeMenuItem: NSMenuItem?
-    private var voiceMenu: NSMenu!
     private var state: State = .idle
     private var followUp = false
     private var commandText = ""
@@ -2127,11 +2041,11 @@ final class Controller: NSObject, NSMenuDelegate {
     private var tick: Timer?
     private var statusItem: NSStatusItem!
     private var statusLine: NSMenuItem!
-    private var triggerSource: DispatchSourceFileSystemObject?
     private var hotKeyRef: EventHotKeyRef?
     private var hotKeyRef2: EventHotKeyRef?
     private var smoothLevel: CGFloat = 0
     private var overlayLastReply = ""
+    private var screenshotToDelete: URL? = nil
     private var streamText = ""        // texto de la respuesta recibido hasta ahora
     private var streamSpokenUpTo = 0   // cuántos caracteres ya se encolaron para hablar
     private var processDone = true
@@ -2146,7 +2060,7 @@ final class Controller: NSObject, NSMenuDelegate {
         let words = max(streamText.split(separator: " ").count, overlayLastReply.split(separator: " ").count)
         let expected = Double(words) / 2.2 + 8
         let w = DispatchWorkItem { [weak self] in
-            guard let self, self.state == .speaking, self.processDone, !self.speaker.isPaused else { return }
+            guard let self, self.state == .speaking, self.processDone else { return }
             logApp("El habla no terminó a tiempo; continúo")
             self.speaker.onFinish = nil
             self.speaker.stop()
@@ -2216,7 +2130,6 @@ final class Controller: NSObject, NSMenuDelegate {
         tick = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in self?.onTick() }
         RunLoop.main.add(tick!, forMode: .common)
         setupHotkey()
-        watchTrigger()
         statusLine.title = "Esperando \"hey claude\""
         updateRemindersLine()
         logApp("Claude Voice listo")
@@ -2279,7 +2192,7 @@ final class Controller: NSObject, NSMenuDelegate {
             }
             if followUp { fresh = stripReplyEcho(fresh) }
             if followUp { commandText = joinWithoutOverlap(segmentPrefix, fresh) } else if let cmd = commandAfterWake(text) { commandText = cmd }
-            if commandText != before { logApp("orden parcial (seguimiento=\(followUp)): \"\(commandText)\"") }
+            if debugText && commandText != before { logApp("orden parcial (seguimiento=\(followUp)): \"\(commandText)\"") }
             overlay.set("Escuchando…", commandText.isEmpty ? "Te escucho" : commandText, .listening)
         case .speaking:
             guard lang == activeLang else { return }
@@ -2289,13 +2202,14 @@ final class Controller: NSObject, NSMenuDelegate {
             let own = Set(normalize(overlayLastReply).split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
             let foreign = words.filter { $0.count > 2 && !own.contains($0) && Int($0) == nil }
             let userTalking = foreign.count >= 2 && Double(foreign.count) / Double(max(words.count, 1)) >= 0.5
-            if (words.count <= 3 && matches(stopRegex, n)) || commandAfterWake(text) != nil || userTalking {
+            let stopWordIsForeign = matches(stopRegex, n) && words.contains { !own.contains($0) && matches(stopRegex, $0) }
+            if (words.count <= 3 && stopWordIsForeign) || commandAfterWake(text) != nil || userTalking {
                 // Semilla: las palabras originales (con acentos) que no son de Claude, quitando la de activación
                 var tokens = text.split(separator: " ").map(String.init).filter { !own.contains(normalize($0).trimmingCharacters(in: .punctuationCharacters)) }
                 if let afterWake = commandAfterWake(tokens.joined(separator: " ")) { tokens = afterWake.split(separator: " ").map(String.init) }
                 var seed = tokens.joined(separator: " ")
                 if matches(stopRegex, normalize(seed)) && tokens.count <= 2 { seed = "" }
-                logApp("Interrumpido por el usuario: \(text) -> semilla \"\(seed)\"")
+                logApp(debugText ? "Interrumpido por el usuario: \(text) -> semilla \"\(seed)\"" : "Interrumpido por el usuario")
                 interrupt(seed: seed)
             }
         case .thinking:
@@ -2314,7 +2228,7 @@ final class Controller: NSObject, NSMenuDelegate {
     private func onTick() {
         // Prueba: un archivo .say con texto hace que Claude lo lea frase por frase como una respuesta
         let sayFile = baseDir.appendingPathComponent(".say")
-        if state == .idle, let t = try? String(contentsOf: sayFile, encoding: .utf8) {
+        if debugText, state == .idle, let t = try? String(contentsOf: sayFile, encoding: .utf8) {
             try? FileManager.default.removeItem(at: sayFile)
             silent = false
             state = .thinking
@@ -2335,7 +2249,7 @@ final class Controller: NSObject, NSMenuDelegate {
             manualListen()
         }
         let typeFile = baseDir.appendingPathComponent(".type")
-        if state == .idle, let t = try? String(contentsOf: typeFile, encoding: .utf8) {
+        if debugText, state == .idle, let t = try? String(contentsOf: typeFile, encoding: .utf8) {
             try? FileManager.default.removeItem(at: typeFile)
             typedCommand(t.trimmingCharacters(in: .whitespacesAndNewlines))
         }
@@ -2362,6 +2276,7 @@ final class Controller: NSObject, NSMenuDelegate {
 
     private func enterListening(followUp: Bool) {
         overlay.showPause(false)
+        silent = false
         state = .listening
         self.followUp = followUp
         segmentPrefix = ""
@@ -2388,7 +2303,12 @@ final class Controller: NSObject, NSMenuDelegate {
         listener.restart()   // sigue escuchando por si dices "hey claude" mientras piensa
         commandText = ""
         let n = normalize(cmd).trimmingCharacters(in: .punctuationCharacters)
-        if matches(endRegex, n) {
+        if matches(onlyStopRegex, n) {
+            // "para", "espera": no hay orden; solo calla y vuelve a reposo
+            logConv("(sin orden: \(cmd))")
+            goIdle(); return
+        }
+        if matches(endRegex, n) && matches(endStrongRegex, n) {
             let en = replyLang == "en"
             speak(en ? (n.contains("thank") ? "You're welcome." : "Okay.") : (n.contains("gracias") ? "De nada." : "Listo."), thenIdle: true); return
         }
@@ -2439,36 +2359,20 @@ final class Controller: NSObject, NSMenuDelegate {
             clearSession()
             logConv("--- nueva conversación (20 min sin actividad) ---")
         }
-        // Contexto adicional: pantalla, portapapeles o selección
-        var cmdToSend = cmd
-        if matches(screenRegex, n) {
-            if !CGPreflightScreenCaptureAccess() {
-                CGRequestScreenCaptureAccess()
-                speak(replyLang == "en" ? "To see your screen I need Screen Recording permission. Enable Claude Voice in System Settings, Privacy and Security, Screen Recording, then restart the app." : "Para ver tu pantalla necesito el permiso de Grabación de pantalla. Activa Claude Voice en Ajustes del Sistema, Privacidad y seguridad, Grabación de pantalla, y reinicia la app.", thenIdle: true)
-                return
-            }
-            let shot = baseDir.appendingPathComponent(".pantalla.jpg")
-            let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
-            if let f = screen?.frame {
-                let rect = "\(Int(f.minX)),\(Int(NSScreen.screens[0].frame.maxY - f.maxY)),\(Int(f.width)),\(Int(f.height))"
-                _ = shell("/usr/sbin/screencapture", ["-x", "-t", "jpg", "-R", rect, shot.path])
-            } else {
-                _ = shell("/usr/sbin/screencapture", ["-x", "-t", "jpg", shot.path])
-            }
-            if FileManager.default.fileExists(atPath: shot.path) {
-                cmdToSend += "\n\n[Adjunto una captura de mi pantalla en \(shot.path). Léela con la herramienta Read antes de responder.]"
-                logApp("Captura de pantalla adjuntada")
-            }
+        // Permiso de pantalla: se comprueba antes de cambiar de estado
+        let wantsScreen = matches(screenRegex, n)
+        if wantsScreen && !CGPreflightScreenCaptureAccess() {
+            CGRequestScreenCaptureAccess()
+            speak(replyLang == "en" ? "To see your screen I need Screen Recording permission. Enable Claude Voice in System Settings, Privacy and Security, Screen Recording, then restart the app." : "Para ver tu pantalla necesito el permiso de Grabación de pantalla. Activa Claude Voice en Ajustes del Sistema, Privacidad y seguridad, Grabación de pantalla, y reinicia la app.", thenIdle: true)
+            return
         }
+        let wantsSelection = matches(selectionRegex, n)
+        if wantsSelection && !accessibilityGranted(prompt: true) {
+            speak(replyLang == "en" ? "I couldn't read the selection. Grant Accessibility access to Claude Voice in System Settings." : "No pude leer la selección. Dale permiso de Accesibilidad a Claude Voice en Ajustes del Sistema.", thenIdle: false); return
+        }
+        var cmdToSend = cmd
         if matches(clipboardRegex, n), let clip = NSPasteboard.general.string(forType: .string), !clip.isEmpty {
             cmdToSend += "\n\n[Contenido del portapapeles]\n" + String(clip.prefix(6000))
-        }
-        if matches(selectionRegex, n) {
-            if let sel = copySelectionFromFrontApp(), !sel.isEmpty {
-                cmdToSend += "\n\n[Texto seleccionado]\n" + String(sel.prefix(6000))
-            } else {
-                speak(replyLang == "en" ? "I couldn't read the selection. Grant Accessibility access to Claude Voice in System Settings." : "No pude leer la selección. Dale permiso de Accesibilidad a Claude Voice en Ajustes del Sistema.", thenIdle: false); return
-            }
         }
         state = .thinking
         if sendSound { earcons.sent() }
@@ -2485,8 +2389,12 @@ final class Controller: NSObject, NSMenuDelegate {
         overlay.set("Pensando · \(modelName)", cmd, .thinking)
         statusLine.title = "Pensando (\(modelName))"
         setIcon("ellipsis.circle.fill")
-        logConv("> [\(modelName)] \(cmd)")
-        runClaude(cmdToSend, model: model, retry: true)
+        let sendNow: (String) -> Void = { [weak self] text in
+            guard let self, self.state == .thinking else { return }
+            self.runClaude(text, model: model, retry: true)
+            logConv("> [\(modelName)] \(cmd)")
+        }
+        gatherContext(cmdToSend, screen: wantsScreen, selection: wantsSelection, completion: sendNow)
     }
 
     private var currentModelName = ""
@@ -2509,13 +2417,18 @@ final class Controller: NSObject, NSMenuDelegate {
             self.flushSentences(final: false)
         }, completion: { [weak self] reply, failed in
             guard let self, self.state == .thinking || self.state == .speaking else { return }
-            if failed && retry && self.streamText.isEmpty {
-                logApp("La orden falló; reinicio Claude con sesión nueva y reintento")
+            if failed && retry && self.streamText.isEmpty && self.claude.lastFailureWasExit {
+                // Solo si el proceso murió (p. ej. sesión que ya no existe): sesión nueva y reintento
+                logApp("El proceso de Claude murió; reinicio con sesión nueva y reintento")
                 self.claude.stop()
                 clearSession()
                 self.runClaude(cmd, model: model, retry: false); return
             }
+            if failed && self.streamText.isEmpty {
+                self.streamText = self.replyLang == "en" ? "Something went wrong, please try again." : "Hubo un error, inténtalo de nuevo."
+            }
             touchSessionTime()
+            if let shot = self.screenshotToDelete { try? FileManager.default.removeItem(at: shot); self.screenshotToDelete = nil }
             if self.streamText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 let text = (reply?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 }
                     ?? "Hubo un error, revisa el log."
@@ -2546,21 +2459,26 @@ final class Controller: NSObject, NSMenuDelegate {
     /// Quita del inicio las palabras que son cola de la última respuesta de Claude (eco que llega con retraso).
     private func stripReplyEcho(_ text: String) -> String {
         guard segmentPrefix.isEmpty, !overlayLastReply.isEmpty else { return text }
-        let tail = Set(normalize(overlayLastReply).split(whereSeparator: { !$0.isLetter }).suffix(12).map(String.init))
-        var words = text.split(separator: " ").map(String.init)
-        var removed = 0
-        while let w = words.first, removed < 6, tail.contains(normalize(w).trimmingCharacters(in: .punctuationCharacters)) {
-            words.removeFirst(); removed += 1
+        let norm: (String) -> String = { normalize($0).trimmingCharacters(in: .punctuationCharacters) }
+        let replyWords = normalize(overlayLastReply).split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
+        let words = text.split(separator: " ").map(String.init)
+        guard !words.isEmpty, !replyWords.isEmpty else { return text }
+        // Las k primeras palabras deben ser exactamente las k últimas de la respuesta, en orden
+        for k in stride(from: min(6, words.count, replyWords.count), through: 1, by: -1) {
+            if words.prefix(k).map(norm) == Array(replyWords.suffix(k)) {
+                if k == 1 && words[0].count < 4 { break }   // una sola palabra corta no cuenta como eco
+                return words.dropFirst(k).joined(separator: " ")
+            }
         }
-        return words.joined(separator: " ")
+        return text
     }
 
     private func resetRecognizerText() { rawNow = ""; rawByLang = [:]; lastRawText = "" }
 
     private func beginStreamingSpeech() {
         resetRecognizerText()
+        if Date().timeIntervalSince(listener.lastRestart) > 1.5 { listener.restart() }
         state = .speaking
-        overlay.setPaused(false)
         overlay.showPause(!silent)
         overlayLastReply = ""
         speakThenIdle = false
@@ -2570,7 +2488,6 @@ final class Controller: NSObject, NSMenuDelegate {
         loudSince = nil
         statusLine.title = "Hablando"
         setIcon("speaker.wave.2.circle.fill")
-        listener.restart()
         speaker.onRange = { [weak self] r in
             guard let self, self.state == .speaking else { return }
             self.overlay.highlight(r)
@@ -2590,10 +2507,8 @@ final class Controller: NSObject, NSMenuDelegate {
         var cut = 0
         if !final {
             // último límite de frase (. ! ? o salto de línea seguido de espacio/fin)
-            if let re = try? NSRegularExpression(pattern: #"[.!?…:\n](?=\s|$)"#) {
-                let ms = re.matches(in: pending, range: NSRange(location: 0, length: (pending as NSString).length))
-                if let last = ms.last { cut = last.range.location + last.range.length }
-            }
+            let ms = rx(#"[.!?…:\n](?=\s|$)"#).matches(in: pending, range: NSRange(location: 0, length: (pending as NSString).length))
+            if let last = ms.last { cut = last.range.location + last.range.length }
             if cut < 12 { return }   // frases muy cortas: espera a que haya más texto
         } else {
             cut = (pending as NSString).length
@@ -2638,7 +2553,6 @@ final class Controller: NSObject, NSMenuDelegate {
         }
         state = .speaking
         processDone = true
-        overlay.setPaused(false)
         overlay.showPause(true)
         overlayLastReply = text
         speakThenIdle = thenIdle
@@ -2750,39 +2664,6 @@ final class Controller: NSObject, NSMenuDelegate {
         commit(text)
     }
 
-    // El submenú de voces se arma al abrirlo, para incluir voces recién descargadas
-    func menuNeedsUpdate(_ menu: NSMenu) {
-        guard menu === voiceMenu else { return }
-        menu.removeAllItems()
-        let current = speaker.voice?.identifier
-        var lastLang = ""
-        for v in Speaker.selectableVoices() {
-            if v.language != lastLang {
-                if !lastLang.isEmpty { menu.addItem(.separator()) }
-                lastLang = v.language
-            }
-            let i = NSMenuItem(title: Speaker.label(for: v), action: #selector(pickVoice(_:)), keyEquivalent: "")
-            i.target = self
-            i.representedObject = v.identifier
-            i.state = v.identifier == current ? .on : .off
-            menu.addItem(i)
-        }
-        if menu.items.isEmpty { menu.addItem(NSMenuItem(title: "No hay voces en español instaladas", action: nil, keyEquivalent: "")) }
-    }
-
-    @objc func pickVoice(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String else { return }
-        speaker.setVoice(identifier: id)
-        testVoice()
-    }
-
-    @objc func pickRate(_ sender: NSMenuItem) {
-        guard let r = sender.representedObject as? Double else { return }
-        speaker.setRate(Float(r))
-        sender.menu?.items.forEach { $0.state = ($0 === sender) ? .on : .off }
-        testVoice()
-    }
-
     @objc func testVoice() { testVoice(english: false) }
     func testVoice(english: Bool) {
         guard state == .idle else { return }
@@ -2812,23 +2693,88 @@ final class Controller: NSObject, NSMenuDelegate {
         if state == .idle { overlay.hide() }
     }
 
+    /// Captura de pantalla (en segundo plano) y selección (asíncrona) antes de enviar la orden.
+    private func gatherContext(_ cmd: String, screen: Bool, selection: Bool, completion: @escaping (String) -> Void) {
+        var text = cmd
+        let afterScreen: () -> Void = { [weak self] in
+            guard let self else { return }
+            if selection {
+                self.copySelectionFromFrontApp { sel in
+                    if let sel, !sel.isEmpty { text += "\n\n[Texto seleccionado]\n" + String(sel.prefix(6000)) }
+                    completion(text)
+                }
+            } else {
+                completion(text)
+            }
+        }
+        guard screen else { afterScreen(); return }
+        let shot = FileManager.default.temporaryDirectory.appendingPathComponent("hey-claude-pantalla-\(UUID().uuidString.prefix(8)).jpg")
+        let target = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
+        let rect: String? = target.map { f in
+            "\(Int(f.frame.minX)),\(Int(NSScreen.screens[0].frame.maxY - f.frame.maxY)),\(Int(f.frame.width)),\(Int(f.frame.height))"
+        }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var args = ["-x", "-t", "jpg"]
+            if let rect { args += ["-R", rect] }
+            args.append(shot.path)
+            _ = shell("/usr/sbin/screencapture", args)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if FileManager.default.fileExists(atPath: shot.path) {
+                    text += "\n\n[Adjunto una captura de mi pantalla en \(shot.path). Léela con la herramienta Read antes de responder.]"
+                    logApp("Captura de pantalla adjuntada")
+                    self.screenshotToDelete = shot
+                }
+                afterScreen()
+            }
+        }
+    }
+
     private func accessibilityGranted(prompt: Bool) -> Bool {
         let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt] as CFDictionary
         return AXIsProcessTrustedWithOptions(opts)
     }
 
-    /// Envía ⌘C a la app activa y devuelve lo que quedó en el portapapeles (sin perder lo que había).
-    private func copySelectionFromFrontApp() -> String? {
-        guard accessibilityGranted(prompt: true) else { return nil }
+    /// Envía ⌘C a la app activa y entrega lo seleccionado sin bloquear ni perder el portapapeles.
+    private func copySelectionFromFrontApp(completion: @escaping (String?) -> Void) {
+        guard accessibilityGranted(prompt: true) else { completion(nil); return }
         let pb = NSPasteboard.general
-        let before = pb.string(forType: .string)
+        let before = snapshotPasteboard()
         let changeCount = pb.changeCount
         postKey(keyCode: 8, flags: .maskCommand)   // ⌘C
-        let deadline = Date().addingTimeInterval(0.6)
-        while pb.changeCount == changeCount && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
-        let sel = pb.changeCount != changeCount ? pb.string(forType: .string) : nil
-        if let before { pb.clearContents(); pb.setString(before, forType: .string) }
-        return sel
+        var tries = 0
+        func poll() {
+            tries += 1
+            if pb.changeCount != changeCount {
+                let sel = pb.string(forType: .string)
+                self.restorePasteboard(before)
+                completion(sel)
+            } else if tries < 12 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: poll)
+            } else {
+                completion(nil)
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: poll)
+    }
+
+    /// Copia completa del portapapeles (todos los tipos), para restaurarla después.
+    private func snapshotPasteboard() -> [[NSPasteboard.PasteboardType: Data]] {
+        (NSPasteboard.general.pasteboardItems ?? []).map { item in
+            var d: [NSPasteboard.PasteboardType: Data] = [:]
+            for t in item.types { if let data = item.data(forType: t) { d[t] = data } }
+            return d
+        }
+    }
+    private func restorePasteboard(_ snap: [[NSPasteboard.PasteboardType: Data]]) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        let items: [NSPasteboardItem] = snap.map { dict in
+            let it = NSPasteboardItem()
+            for (t, data) in dict { it.setData(data, forType: t) }
+            return it
+        }
+        if !items.isEmpty { pb.writeObjects(items) }
     }
 
     private func postKey(keyCode: CGKeyCode, flags: CGEventFlags) {
@@ -2842,12 +2788,10 @@ final class Controller: NSObject, NSMenuDelegate {
     private func typeIntoFrontApp(_ text: String) -> Bool {
         guard accessibilityGranted(prompt: true) else { return false }
         let pb = NSPasteboard.general
-        let before = pb.string(forType: .string)
+        let before = snapshotPasteboard()
         pb.clearContents(); pb.setString(text, forType: .string)
         postKey(keyCode: 9, flags: .maskCommand)   // ⌘V
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-            if let before { pb.clearContents(); pb.setString(before, forType: .string) }
-        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.restorePasteboard(before) }
         return true
     }
 
@@ -2856,13 +2800,13 @@ final class Controller: NSObject, NSMenuDelegate {
         let en = replyLang == "en"
         let loc = Locale(identifier: en ? "en_US" : "es_MX")
         func fmt(_ pattern: String) -> String { let f = DateFormatter(); f.locale = loc; f.dateFormat = pattern; return f.string(from: Date()) }
-        if matches(try! NSRegularExpression(pattern: #"^(que hora es|dime la hora|que horas son|what time is it|what's the time|tell me the time)\b"#), n) {
+        if matches(rx(#"^(que hora es|dime la hora|que horas son|what time is it|what's the time|tell me the time)\b"#), n) {
             return en ? "It's \(fmt("h:mm a"))." : "Son las \(fmt("h:mm"))."
         }
-        if matches(try! NSRegularExpression(pattern: #"^(que dia es|que fecha es|en que fecha estamos|que dia es hoy|what day is it|what's the date|what is the date|what's today's date)\b"#), n) {
+        if matches(rx(#"^(que dia es|que fecha es|en que fecha estamos|que dia es hoy|what day is it|what's the date|what is the date|what's today's date)\b"#), n) {
             return en ? "Today is \(fmt("EEEE, MMMM d"))." : "Hoy es \(fmt("EEEE d 'de' MMMM"))."
         }
-        if matches(try! NSRegularExpression(pattern: #"^(cuanta bateria|como esta la bateria|nivel de bateria|bateria|how much battery|battery level|battery)\b"#), n) {
+        if matches(rx(#"^(cuanta bateria|como esta la bateria|nivel de bateria|bateria|how much battery|battery level|battery)\b"#), n) {
             let out = shell("/usr/bin/pmset", ["-g", "batt"])
             if let m = try? NSRegularExpression(pattern: #"(\d+)%; (\w+)"#).firstMatch(in: out, range: NSRange(location: 0, length: (out as NSString).length)) {
                 let pct = (out as NSString).substring(with: m.range(at: 1)), st = (out as NSString).substring(with: m.range(at: 2))
@@ -2870,7 +2814,7 @@ final class Controller: NSObject, NSMenuDelegate {
                 return en ? "Battery is at \(pct) percent\(charging ? ", charging" : "")." : "La batería está al \(pct) por ciento\(charging ? ", cargando" : "")."
             }
         }
-        if matches(try! NSRegularExpression(pattern: #"^(que tengo pendiente|que recordatorios tengo|mis recordatorios|recordatorios pendientes|what reminders do i have|my reminders|what's pending)\b"#), n) {
+        if matches(rx(#"^(que tengo pendiente|que recordatorios tengo|mis recordatorios|recordatorios pendientes|what reminders do i have|my reminders|what's pending)\b"#), n) {
             let items = reminders.items.sorted { $0.fire < $1.fire }
             if items.isEmpty { return en ? "You have no pending reminders." : "No tienes recordatorios pendientes." }
             let f = DateFormatter(); f.locale = loc; f.dateFormat = "h:mm"
@@ -3043,21 +2987,6 @@ final class Controller: NSObject, NSMenuDelegate {
         reregisterHotkeys()
     }
 
-    private func watchTrigger() {
-        try? FileManager.default.removeItem(at: triggerFile)
-        let fd = open(baseDir.path, O_EVTONLY)
-        guard fd >= 0 else { return }
-        let src = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: .write, queue: .main)
-        src.setEventHandler { [weak self] in
-            if FileManager.default.fileExists(atPath: triggerFile.path) {
-                try? FileManager.default.removeItem(at: triggerFile)
-                self?.manualListen()
-            }
-        }
-        src.setCancelHandler { close(fd) }
-        src.resume()
-        triggerSource = src
-    }
 }
 
 // MARK: - App
@@ -3066,6 +2995,8 @@ var controller: Controller!
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ n: Notification) {
+        rotateAppLog()
+        signal(SIGPIPE, SIG_IGN)
         controller = Controller()
         controller.start()
     }

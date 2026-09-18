@@ -96,7 +96,8 @@ Menú de la barra: escuchar ahora, escribir una orden, nueva conversación, hist
 ## Privacidad y seguridad
 
 - El reconocimiento de voz es local (Apple, modo en el dispositivo). Solo el texto de tus órdenes viaja a Claude, con tu cuenta.
-- La app ejecuta comandos en tu Mac en tu nombre. Tiene una lista de prohibidos (borrar, sudo, formatear, apagar, matar procesos, cambiar permisos, enviar correos) que puedes ampliar en `main.swift` (`disallowedTools`).
+- La app ejecuta comandos en tu Mac en tu nombre, pero solo de una lista blanca de comandos de consulta y apertura (`allowedTools` en `main.swift`): abrir apps, AppleScript, procesos, disco, batería, listar y leer archivos, crear carpetas y copiar. Solo puede crear o editar archivos en el Escritorio, en Documentos y en su contexto personal. No puede borrar, usar sudo, matar procesos ni enviar correos.
+- Cuando le pides ver la pantalla, la captura va a un archivo temporal que se borra al terminar la orden.
 - Historial y contexto se guardan en texto plano en `~/claude-voice`. Están en `.gitignore`.
 - Para ver trazas de todo lo que oye (solo para depurar): `defaults write com.heyclaude.voice debugTrace -bool true` y reinicia la app.
 
