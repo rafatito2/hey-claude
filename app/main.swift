@@ -2045,10 +2045,15 @@ final class PersistentClaude {
     }
 
     func send(_ text: String, model: String?, onStatus: @escaping (String) -> Void, onText: @escaping (String) -> Void, completion: @escaping (String?, Bool) -> Void) {
+        var text = text
         let contextChanged = contextStamp != contextModified()
-        if !isRunning || model != self.model || contextChanged || effort != startedEffort || (!ownSession && readSession() == nil) {
-            if isRunning { logApp("Reinicio de Claude Code: \(!isRunning ? "no corría" : model != self.model ? "cambio de modelo" : contextChanged ? "cambió el contexto" : "sesión nueva")") }
+        if !isRunning || model != self.model || effort != startedEffort || (!ownSession && readSession() == nil) {
+            if isRunning { logApp("Reinicio de Claude Code: \(model != self.model ? "cambio de modelo" : effort != startedEffort ? "cambio de esfuerzo" : "sesión nueva")") }
             start(model: model)
+        } else if contextChanged, let ctx = try? String(contentsOf: contextFile, encoding: .utf8) {
+            // Sin reiniciar: el contexto actualizado viaja con la orden
+            contextStamp = contextModified()
+            text += "\n\n[Contexto personal actualizado]\n" + String(ctx.suffix(3000))
         }
         guard let stdin = stdinHandle else { completion(nil, true); return }
         turn = Turn(onStatus: onStatus, onText: onText, completion: completion)
@@ -2056,6 +2061,18 @@ final class PersistentClaude {
         guard var data = try? JSONSerialization.data(withJSONObject: msg) else { completion(nil, true); return }
         data.append(10)
         stdin.write(data)
+    }
+
+    /// Inyecta una instrucción en el turno en curso (Claude la atiende en la siguiente pausa entre acciones).
+    /// Devuelve false si no hay turno en curso; en ese caso usa send().
+    func steer(_ text: String) -> Bool {
+        guard isRunning, turn != nil, let stdin = stdinHandle else { return false }
+        let msg: [String: Any] = ["type": "user", "message": ["role": "user", "content": [["type": "text", "text": text]]]]
+        guard var data = try? JSONSerialization.data(withJSONObject: msg) else { return false }
+        data.append(10)
+        stdin.write(data)
+        logApp("Instrucción inyectada en el turno en curso")
+        return true
     }
 
     private func handle(_ obj: [String: Any]) {
@@ -2308,12 +2325,20 @@ final class Controller: NSObject {
         case .thinking:
             // "hey claude" mientras piensa: cancela y escucha la orden nueva
             if let cmd = commandAfterWake(text) {
-                logApp("Activación durante el procesamiento: cancelo")
-                claude.cancel()
-                processDone = true
-                logConv("< (cancelado por nueva orden)")
-                enterListening(followUp: true)
-                if !cmd.isEmpty { segmentPrefix = ""; commandText = cmd; lastChange = Date(); overlay.set("Escuchando…", cmd, .listening) }
+                logApp("Activación durante el procesamiento")
+                if cmd.isEmpty {
+                    // Solo "hey claude": corta la orden y escucha
+                    claude.cancel(); processDone = true
+                    logConv("< (cancelado por nueva orden)")
+                    enterListening(followUp: true)
+                } else if claude.steer("El usuario dice ahora: \"\(cmd)\". Deja lo que estabas haciendo si ya no aplica y atiende esto.") {
+                    logConv("> [inyectada] \(cmd)")
+                    overlay.set("Pensando · \(currentModelName)", cmd, .thinking)
+                } else {
+                    claude.cancel(); processDone = true
+                    enterListening(followUp: true)
+                    segmentPrefix = ""; commandText = cmd; lastChange = Date(); overlay.set("Escuchando…", cmd, .listening)
+                }
             }
         }
     }
@@ -2993,12 +3018,12 @@ final class Controller: NSObject {
         guard let proc = t.process else { return }
         logConv("> [a la tarea] \(instruction)")
         t.milestones.append(replyLang == "en" ? "You said: \(instruction)" : "Le dijiste: \(instruction)")
-        if matches(rx(#"\b(rapido|rapida|apurate|date prisa|faster|hurry|quick|quickly)\b"#), normalize(instruction)) { proc.effort = "low" }
-        if matches(rx(#"\b(despacio|con calma|cuidado|mas lento|slower|carefully)\b"#), normalize(instruction)) { proc.effort = "high" }
-        proc.cancel()   // corta el turno actual; la sesión se retoma en la siguiente orden
-        proc.send("Instrucción del usuario mientras haces la tarea: \"\(instruction)\". Aplícala y continúa la tarea desde donde estaba (revisa el estado actual en Chrome si aplica). Si cambia el plan, escribe primero el PLAN actualizado con pasos numerados. Recuerda el protocolo PASO / HITO / RESULTADO: marca cada paso al empezarlo.",
-                  model: proc.currentModel,
-                  onStatus: taskStatusHandler(t), onText: taskTextHandler(t), completion: taskCompletionHandler(t))
+        let msg = "Instrucción del usuario mientras haces la tarea: \"\(instruction)\". Aplícala y continúa la tarea desde donde estaba. Si cambia el plan, escribe primero el PLAN actualizado con pasos numerados. Recuerda el protocolo PASO / HITO / RESULTADO: marca cada paso al empezarlo."
+        if !proc.steer(msg) {
+            // La tarea no estaba en medio de un turno: nueva orden en el mismo proceso vivo (sin reiniciar)
+            proc.send(msg, model: proc.currentModel,
+                      onStatus: taskStatusHandler(t), onText: taskTextHandler(t), completion: taskCompletionHandler(t))
+        }
         tasks.onChange?()
         speak(replyLang == "en" ? "Got it, I passed that on." : "Listo, se lo paso.", thenIdle: true)
     }

@@ -421,4 +421,4 @@ Estás ejecutando una TAREA LARGA en segundo plano y el usuario no está mirando
 """
 
 /// Herramientas ampliadas solo para tareas (el usuario las confirma al aprobar el plan).
-let taskExtraTools = "Bash(python3:*),Bash(node:*),Bash(npm:*),Bash(brew install:*),Bash(brew list:*),Bash(curl:*),Bash(git:*),Bash(chmod +x:*),Bash(pip3:*),Write(~/claude-voice/tareas/**),Edit(~/claude-voice/tareas/**),Bash(~/claude-voice/tareas/*)"
+let taskExtraTools = "Bash(python3:*),Bash(node:*),Bash(npm:*),Bash(brew install:*),Bash(brew list:*),Bash(brew info:*),Bash(curl:*),Bash(git:*),Bash(chmod +x:*),Bash(pip3:*),Bash(stockfish:*),Bash(/opt/homebrew/bin/*),Bash(/usr/local/bin/*),Bash(which:*),Write(~/claude-voice/tareas/**),Edit(~/claude-voice/tareas/**),Bash(~/claude-voice/tareas/*),Bash(bash ~/claude-voice/tareas/*),Bash(python3 ~/claude-voice/tareas/*)"
