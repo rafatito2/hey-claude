@@ -9,5 +9,6 @@ swiftc -O -swift-version 5 \
   -framework AppKit -framework Speech -framework AVFoundation -framework Carbon \
   -o "$APP/Contents/MacOS/ClaudeVoice" main.swift
 cp Info.plist "$APP/Contents/Info.plist"
+cp Assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 codesign --force -s - "$APP"
 echo "Listo: $APP"

@@ -1,3 +1,5 @@
+<p align="center"><img src="app/Assets/logo-256.png" width="128" alt="Hey Claude"></p>
+
 # Hey Claude
 
 Asistente de voz "hey claude" para macOS que conecta tu micrófono con [Claude Code](https://claude.com/claude-code). Dices **"hey claude"** y le pides cosas: abrir apps o páginas, leer y usar sitios en Chrome, revisar tu correo o calendario, poner recordatorios, crear documentos o simplemente preguntar. Responde con voz, en español o inglés, y muestra un widget flotante estilo Siri con lo que va haciendo.
