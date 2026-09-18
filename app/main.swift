@@ -2380,6 +2380,9 @@ final class Controller: NSObject {
             tasks.cancelAll()
             speak(replyLang == "en" ? "Cancelled." : "Cancelada.", thenIdle: false); return
         }
+        if let t = taskAddressed(by: n) {
+            steerTask(t, with: cmd); return
+        }
         if matches(longTaskRegex, n) {
             planTask(cmd, n: n); return
         }
@@ -2929,6 +2932,51 @@ final class Controller: NSObject {
         return 30 * 60
     }
 
+    /// Tarea en curso a la que se refiere la orden (por palabras de dirección o del título), si la hay.
+    private func taskAddressed(by n: String) -> LongTask? {
+        let running = tasks.running.filter { $0.status == .running }
+        guard let t = running.first, !matches(explicitNewTaskRegex, n) else { return nil }
+        if matches(steerRegex, n) { return t }
+        let titleWords = Set(normalize(t.title).split(whereSeparator: { !$0.isLetter }).map(String.init).filter { $0.count > 4 })
+        let overlap = n.split(whereSeparator: { !$0.isLetter }).map(String.init).filter { titleWords.contains($0) }
+        return overlap.isEmpty ? nil : t
+    }
+
+    /// Interrumpe la tarea, le pasa tu instrucción y la hace continuar con toda su memoria.
+    private func steerTask(_ t: LongTask, with instruction: String) {
+        guard let proc = t.process else { return }
+        logConv("> [a la tarea] \(instruction)")
+        t.milestones.append(replyLang == "en" ? "You said: \(instruction)" : "Le dijiste: \(instruction)")
+        proc.cancel()   // corta el turno actual; la sesión se retoma en la siguiente orden
+        proc.send("Instrucción del usuario mientras haces la tarea: \"\(instruction)\". Aplícala y continúa la tarea desde donde estaba (revisa el estado actual en Chrome si aplica). Recuerda el protocolo PASO / HITO / RESULTADO.",
+                  model: proc.currentModel,
+                  onStatus: taskStatusHandler(t), onText: taskTextHandler(t), completion: taskCompletionHandler(t))
+        tasks.onChange?()
+        speak(replyLang == "en" ? "Got it, I passed that on." : "Listo, se lo paso.", thenIdle: true)
+    }
+
+    private func taskStatusHandler(_ t: LongTask) -> (String) -> Void {
+        { [weak self] l in
+            t.lastToolLabel = l; t.toolCalls += 1; self?.tasks.onChange?()
+            if t.toolCalls > TaskManager.maxToolCalls { self?.tasks.finish(t, status: .failed, message: "Detuve la tarea \(t.title): demasiados pasos.") }
+        }
+    }
+    private func taskTextHandler(_ t: LongTask) -> (String) -> Void {
+        { [weak self] d in for line in t.ingest(d) { self?.announce(line) }; self?.tasks.onChange?() }
+    }
+    private func taskCompletionHandler(_ t: LongTask) -> (String?, Bool) -> Void {
+        { [weak self] reply, failed in
+            guard let self else { return }
+            for line in t.flush() { self.announce(line) }
+            guard t.status == .running else { return }
+            let final = t.result ?? (reply ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            t.result = final
+            logConv("< (tarea) \(final.prefix(300))")
+            if failed { self.tasks.finish(t, status: .failed, message: "La tarea \(t.title) falló. \(final.prefix(200))") }
+            else { self.tasks.finish(t, status: .done, message: t.milestones.isEmpty && t.steps.isEmpty ? "Terminé: \(final.prefix(240))" : "Terminé la tarea. \(final.prefix(240))") }
+        }
+    }
+
     /// Pide el plan a un proceso propio y espera tu confirmación por voz.
     private func planTask(_ cmd: String, n: String) {
         panelDismissed = false
@@ -2978,19 +3026,7 @@ final class Controller: NSObject {
         tasks.onChange?()
         logConv("> [tarea en curso] \(t.title)")
         proc.send("Adelante, ejecuta el plan. Recuerda el protocolo PASO / HITO / RESULTADO.", model: proc.currentModel,
-                  onStatus: { [weak self] l in t.lastToolLabel = l; t.toolCalls += 1; self?.tasks.onChange?()
-                      if t.toolCalls > TaskManager.maxToolCalls { self?.tasks.finish(t, status: .failed, message: "Detuve la tarea \(t.title): demasiados pasos.") } },
-                  onText: { [weak self] d in for line in t.ingest(d) { self?.announce(line) }; self?.tasks.onChange?() },
-                  completion: { [weak self] reply, failed in
-                      guard let self else { return }
-                      for line in t.flush() { self.announce(line) }
-                      guard t.status == .running else { return }
-                      let final = t.result ?? (reply ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                      t.result = final
-                      logConv("< (tarea) \(final.prefix(300))")
-                      if failed { self.tasks.finish(t, status: .failed, message: "La tarea \(t.title) falló. \(final.prefix(200))") }
-                      else { self.tasks.finish(t, status: .done, message: t.milestones.isEmpty && t.steps.isEmpty ? "Terminé: \(final.prefix(240))" : "Terminé la tarea. \(final.prefix(240))") }
-                  })
+                  onStatus: taskStatusHandler(t), onText: taskTextHandler(t), completion: taskCompletionHandler(t))
         speak(replyLang == "en" ? "On it. I'll let you know." : "Voy con ello. Te aviso cuando termine.", thenIdle: true)
         if showTasksPanel { refreshTasksPanel() }
     }

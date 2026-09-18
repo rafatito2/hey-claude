@@ -356,6 +356,8 @@ let taskStatusRegex = try! NSRegularExpression(pattern: #"^(como vas|como va|com
 let taskCancelRegex = try! NSRegularExpression(pattern: #"^(cancela la tarea|cancela las tareas|deten la tarea|para la tarea|cancel the task|stop the task|abort)\b"#)
 let confirmRegex = try! NSRegularExpression(pattern: #"^(si|sí|dale|adelante|ok|okay|hazlo|vamos|procede|de acuerdo|claro|yes|go ahead|do it|start|sure|go)\b"#)
 let denyRegex = try! NSRegularExpression(pattern: #"^(no|cancela|dejalo|olvidalo|mejor no|nah|nope|forget it|never mind|cancel)\b"#)
+let steerRegex = try! NSRegularExpression(pattern: #"\b(mas rapido|rapido|apurate|date prisa|acelera|mas lento|despacio|sigue|continua|cambia|mejor|en vez|no hagas|deja de|intenta|prueba|usa|hazlo|ve por|ataca|defiende|faster|hurry|slower|continue|keep going|change|instead|don't|stop doing|try|use|go for)\b"#)
+let explicitNewTaskRegex = try! NSRegularExpression(pattern: #"\b(en segundo plano|otra tarea|nueva tarea|ademas|tambien|in the background|another task|new task|also)\b"#)
 let taskTimeoutRegex = try! NSRegularExpression(pattern: #"\b(tomate|tienes|te doy|maximo|take|you have)\s+(\S+)\s+(minutos?|horas?|hora|minutes?|hours?|hour)\b"#)
 
 /// Instrucciones que recibe el proceso de una tarea larga.
