@@ -136,6 +136,13 @@ final class TaskManager {
 
     func cancelAll() { running.forEach { cancel($0) } }
 
+    /// Quita de la lista las tareas que ya no corren.
+    func clearFinished() {
+        tasks.removeAll { $0.status != .running && $0.status != .planning && $0.status != .waiting }
+        onChange?()
+    }
+    var hasFinished: Bool { tasks.contains { $0.status != .running && $0.status != .planning && $0.status != .waiting } }
+
     private func tick() {
         for t in running where t.status == .running && Date() > t.deadline {
             finish(t, status: .timedOut, message: "Se acabó el tiempo para la tarea: \(t.title).")
@@ -259,8 +266,20 @@ final class TasksPanel: NSObject {
         applyTheme()
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         currentDots.removeAll()
-        let header = label("Tareas de Claude", size: 13, weight: .semibold, alpha: 0.6, lines: 1)
-        stack.addArrangedSubview(header)
+        let headerRow = NSStackView()
+        headerRow.orientation = .horizontal
+        headerRow.spacing = 12
+        headerRow.addArrangedSubview(label("Tareas de Claude", size: 13, weight: .semibold, alpha: 0.6, lines: 1))
+        if tasks.contains(where: { $0.status != .running && $0.status != .planning && $0.status != .waiting }) {
+            clearButton.bezelStyle = .inline
+            clearButton.controlSize = .small
+            clearButton.font = .systemFont(ofSize: 11)
+            clearButton.target = self
+            clearButton.action = #selector(clearPressed)
+            clearButton.toolTip = "Quitar las tareas terminadas"
+            headerRow.addArrangedSubview(clearButton)
+        }
+        stack.addArrangedSubview(headerRow)
         for t in tasks {
             let box = NSStackView()
             box.orientation = .vertical
@@ -327,11 +346,15 @@ final class TasksPanel: NSObject {
         closeButton.frame = NSRect(x: width - 36, y: h - 34, width: 24, height: 24)
     }
 
+    @objc private func clearPressed() { onClear?() }
+
     @objc private func cancelPressed(_ sender: NSButton) {
         guard let id = sender.identifier?.rawValue else { return }
         onCancelId?(id)
     }
     var onCancelId: ((String) -> Void)?
+    var onClear: (() -> Void)?
+    private let clearButton = NSButton(title: "Limpiar", target: nil, action: nil)
 
     /// Se coloca justo encima del widget principal.
     func show(above widgetFrame: NSRect) {

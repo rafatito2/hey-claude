@@ -2161,6 +2161,7 @@ final class Controller: NSObject {
             self.tasks.cancel(t)
         }
         tasksPanel.onClose = { [weak self] in self?.panelDismissed = true }
+        tasksPanel.onClear = { [weak self] in self?.tasks.clearFinished() }
         overlay.onStop = { [weak self] in self?.cancelPressed() }
         overlay.onPause = { [weak self] in self?.pausePressed() }
         overlay.onTap = { [weak self] in self?.manualListen() }
@@ -2372,12 +2373,13 @@ final class Controller: NSObject {
         // Tareas largas: confirmación pendiente, estado, cancelación o detección
         if let draft = pendingTask {
             pendingTask = nil
-            if matches(confirmRegex, n) { startTask(draft); return }
             if matches(denyRegex, n) {
                 tasks.finish(draft, status: .cancelled, message: nil)
                 speak(replyLang == "en" ? "Okay, I won't do it." : "Vale, no lo hago.", thenIdle: true); return
             }
-            tasks.finish(draft, status: .cancelled, message: nil)   // otra orden: descarta el plan y sigue normal
+            // Cualquier otra respuesta cuenta como "sí": si además trae una indicación, se la pasamos
+            startTask(draft, extra: matches(confirmRegex, n) && n.split(separator: " ").count <= 3 ? nil : cmd)
+            return
         }
         if matches(taskStatusRegex, n) {
             let running = tasks.running
@@ -3031,14 +3033,16 @@ final class Controller: NSObject {
     }
 
     /// Ejecuta la tarea en su proceso propio y devuelve el control.
-    private func startTask(_ t: LongTask) {
+    private func startTask(_ t: LongTask, extra: String? = nil) {
         guard let proc = t.process else { return }
+        if let extra { t.milestones.append(replyLang == "en" ? "You said: \(extra)" : "Le dijiste: \(extra)"); logConv("> [al plan] \(extra)") }
         t.status = .running
         t.runStartedAt = Date()
         t.deadline = Date().addingTimeInterval(t.deadline.timeIntervalSince(t.startedAt))
         tasks.onChange?()
         logConv("> [tarea en curso] \(t.title)")
-        proc.send("Adelante, ejecuta el plan. Recuerda el protocolo PASO / HITO / RESULTADO.", model: proc.currentModel,
+        let go = "Adelante, ejecuta el plan." + (extra.map { " Indicación adicional del usuario: \"\($0)\". Tenla en cuenta." } ?? "") + " Recuerda el protocolo PASO / HITO / RESULTADO."
+        proc.send(go, model: proc.currentModel,
                   onStatus: taskStatusHandler(t), onText: taskTextHandler(t), completion: taskCompletionHandler(t))
         speak(replyLang == "en" ? "On it. I'll let you know." : "Voy con ello. Te aviso cuando termine.", thenIdle: true)
         if showTasksPanel { refreshTasksPanel() }
@@ -3107,6 +3111,7 @@ final class Controller: NSObject {
         refreshTasksPanel()
     }
     @objc func cancelAllTasks() { tasks.cancelAll() }
+    @objc func clearFinishedTasks() { tasks.clearFinished() }
 
     /// Botón ■ del widget: corta a Claude (hablando o generando) y sigue escuchando.
     func pausePressed() {
@@ -3226,6 +3231,8 @@ final class Controller: NSObject {
         panelItem.target = self; panelItem.state = showTasksPanel ? .on : .off; menu.addItem(panelItem)
         let cancelTasks = NSMenuItem(title: "Cancelar tareas en curso", action: #selector(cancelAllTasks), keyEquivalent: "")
         cancelTasks.target = self; menu.addItem(cancelTasks)
+        let clearTasks = NSMenuItem(title: "Limpiar tareas terminadas", action: #selector(clearFinishedTasks), keyEquivalent: "")
+        clearTasks.target = self; menu.addItem(clearTasks)
         remindersLine = NSMenuItem(title: "Sin recordatorios pendientes", action: nil, keyEquivalent: "")
         remindersLine.isEnabled = false
         menu.addItem(remindersLine)
