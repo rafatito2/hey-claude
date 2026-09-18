@@ -17,6 +17,11 @@ Todo corre en tu Mac con **tu propia cuenta de Claude**. No hay servidores inter
 - **Modelos por nivel**: preguntas simples con Haiku, lo demás con Sonnet, y el modelo grande solo si pides "piensa bien". Configurable en Ajustes.
 - **Bilingüe**: entiende español e inglés con un solo reconocedor local de Apple, responde en el idioma de la orden y usa una voz distinta para cada idioma.
 - **Cancelación de eco**: la voz de Claude sale por el mismo motor de audio que captura el micrófono, así no se oye a sí mismo; pausa lo que esté sonando (YouTube, Spotify) mientras conversas y lo reanuda al terminar.
+- **Rápido**: Claude Code se queda abierto en segundo plano recibiendo órdenes en streaming; cada orden tarda 1 o 2 segundos en vez de arrancar desde cero.
+- **Respuestas instantáneas sin modelo**: hora, fecha, batería y recordatorios pendientes se contestan en la app, en cero segundos y sin gastar cuota.
+- **Ve tu pantalla y tu portapapeles**: "qué dice este error en mi pantalla", "resume lo que copié", "traduce lo seleccionado" (pantalla y selección piden permiso de Grabación de pantalla y Accesibilidad la primera vez).
+- **Dictado en cualquier app**: "teclea: hola profesor, le adjunto la tarea" escribe el texto en la ventana activa.
+- **Historial en la app**: ventana con las conversaciones, buscador y botón para retomar una anterior.
 - **Widget**: se encoge a un círculo en reposo, se puede arrastrar, tema claro u oscuro, orden escrita con ⌥⌘T para lugares con gente.
 
 ## Requisitos
@@ -67,12 +72,14 @@ Después:
 | "hey claude, abre YouTube" | Abre Chrome en YouTube |
 | "hey claude, revisa si tengo tareas en Canvas" | Navega, lee la página y te resume |
 | "hey claude, qué app usa más procesador" | Consulta el sistema y responde |
+| "hey claude, qué dice este error en mi pantalla" | Captura la pantalla y la lee |
+| "teclea: nos vemos a las cinco" | Escribe el texto en la app activa |
 | "recuérdame en 10 minutos tomar agua" | Recordatorio con voz y notificación |
 | "recuerda que mi carrera es ingeniería" | Lo guarda en `contexto.md` |
 | "nueva conversación" | Empieza de cero |
 | "gracias, listo" | Cierra la conversación |
 
-Menú de la barra: escuchar ahora, escribir una orden, nueva conversación, historial, contexto, vocabulario y Ajustes (voces, velocidad, espera tras responder, sonido, tema, modelos).
+Menú de la barra: escuchar ahora, escribir una orden, nueva conversación, historial, contexto, vocabulario y Ajustes (voces, velocidad, espera tras responder, sonido, atajos de teclado, tema, modelos).
 
 ## Archivos
 
