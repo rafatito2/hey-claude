@@ -26,12 +26,14 @@ if ! "$CLAUDE_BIN" auth status 2>/dev/null | grep -q '"loggedIn": true'; then
 fi
 echo "macOS $(sw_vers -productVersion), Swift $(swiftc --version 2>/dev/null | head -1 | sed 's/.*version //;s/ .*//'), Claude Code $($CLAUDE_BIN --version 2>/dev/null | head -1)"
 
-# El proyecto debe vivir en ~/claude-voice (la app guarda ahí su configuración)
+# El código puede vivir donde quieras (este repo); la app guarda sus datos en ~/claude-voice.
 SRC="$(cd "$(dirname "$0")" && pwd)"
+mkdir -p "$DIR/tareas"
 if [[ "$SRC" != "$DIR" ]]; then
-  say_step "Copiando el proyecto a $DIR"
-  mkdir -p "$DIR"
-  rsync -a --exclude .git --exclude ClaudeVoice.app "$SRC/" "$DIR/"
+  say_step "Copiando los archivos de ejecución a $DIR"
+  cp "$SRC/ask.sh" "$SRC/make_shortcut.py" "$DIR/"
+  cp "$SRC/tareas/bestmove.sh" "$DIR/tareas/"
+  cp "$SRC/contexto.example.md" "$SRC/vocabulario.example.txt" "$DIR/"
 fi
 cd "$DIR"
 
@@ -44,10 +46,10 @@ simple=haiku
 normal=sonnet
 profundo=default
 EOF
-chmod +x ask.sh app/build.sh tareas/bestmove.sh
+chmod +x "$DIR/ask.sh" "$DIR/tareas/bestmove.sh" "$SRC/app/build.sh"
 
 say_step "Compilando la app"
-./app/build.sh
+"$SRC/app/build.sh"
 
 say_step "Registrando arranque al iniciar sesión"
 mkdir -p "$HOME/Library/LaunchAgents"

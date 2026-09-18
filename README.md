@@ -45,18 +45,10 @@ Cada orden de voz corre con tu cuenta y tu suscripción. La app no guarda creden
 
 ## Instalación
 
-Una sola línea (clona en `~/claude-voice` y ejecuta el instalador):
+Una sola línea (clona donde quieras y ejecuta el instalador; la app guarda sus datos en `~/claude-voice`):
 
 ```bash
-git clone https://github.com/rafatito2/hey-claude.git ~/claude-voice && ~/claude-voice/install.sh
-```
-
-O paso a paso:
-
-```bash
-git clone https://github.com/rafatito2/hey-claude.git ~/claude-voice
-cd ~/claude-voice
-./install.sh
+git clone https://github.com/rafatito2/hey-claude.git ~/Developer/hey-claude && ~/Developer/hey-claude/install.sh
 ```
 
 El instalador comprueba los requisitos, compila la app, la registra para arrancar al iniciar sesión y la abre. La primera vez macOS pide permiso de **Micrófono** y **Reconocimiento de voz**: acéptalos.
@@ -92,7 +84,7 @@ Menú de la barra: escuchar ahora, escribir una orden, nueva conversación, hist
 | `app/main.swift` | La app (AppKit + Speech + AVFoundation) |
 | `app/tasks.swift` | Tareas largas en segundo plano y panel de progreso |
 | `app/build.sh` | Compila `ClaudeVoice.app` |
-| `contexto.md` | Tu memoria personal (no se sube al repo) |
+| `~/claude-voice/` | Carpeta de datos de la app: `contexto.md` (memoria personal), `vocabulario.txt`, `modelos.txt`, historial, recordatorios, tareas y la app compilada. No se sube al repo. |
 | `vocabulario.txt` | Palabras que el reconocedor debe conocer |
 | `modelos.txt` | Modelo por nivel de orden |
 | `recordatorios.json`, `voice.log` | Recordatorios pendientes e historial (locales) |
