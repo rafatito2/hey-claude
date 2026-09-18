@@ -152,6 +152,22 @@ func textLanguage(_ text: String) -> String {
 
 // MARK: - Utilidades
 
+/// El reconocedor de español escribe el inglés con Cada Palabra En Mayúscula; lo devolvemos a frase normal.
+func fixTitleCase(_ text: String) -> String {
+    let words = text.split(separator: " ").map(String.init)
+    guard words.count >= 3 else { return text }
+    let titled = words.filter { w in
+        guard let f = w.first, f.isUppercase else { return false }
+        return w.dropFirst().allSatisfy { !$0.isUppercase }
+    }.count
+    guard Double(titled) >= Double(words.count) * 0.7 else { return text }
+    var fixed = words.map { $0.lowercased() }
+    fixed = fixed.map { $0 == "i" ? "I" : ($0.hasPrefix("i'") ? "I" + $0.dropFirst() : $0) }
+    var out = fixed.joined(separator: " ")
+    if let f = out.first { out = String(f).uppercased() + out.dropFirst() }
+    return out
+}
+
 func shell(_ path: String, _ args: [String]) -> String {
     let p = Process(); p.executableURL = URL(fileURLWithPath: path); p.arguments = args
     let out = Pipe(); p.standardOutput = out; p.standardError = Pipe()
@@ -2192,6 +2208,7 @@ final class Controller: NSObject {
             }
             if followUp { fresh = stripReplyEcho(fresh) }
             if followUp { commandText = joinWithoutOverlap(segmentPrefix, fresh) } else if let cmd = commandAfterWake(text) { commandText = cmd }
+            commandText = fixTitleCase(commandText)
             if debugText && commandText != before { logApp("orden parcial (seguimiento=\(followUp)): \"\(commandText)\"") }
             overlay.set("Escuchando…", commandText.isEmpty ? "Te escucho" : commandText, .listening)
         case .speaking:
@@ -2295,7 +2312,8 @@ final class Controller: NSObject {
         setIcon("mic.circle.fill")
     }
 
-    private func commit(_ cmd: String) {
+    private func commit(_ cmdRaw: String) {
+        let cmd = fixTitleCase(cmdRaw)
         replyLang = languageScore(cmd) < 0 ? "en" : "es"
         logApp("Enviando orden [\(replyLang)]: \"\(cmd)\"")
         lastRawText = ""
