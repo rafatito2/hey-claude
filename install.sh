@@ -44,7 +44,7 @@ simple=haiku
 normal=sonnet
 profundo=default
 EOF
-chmod +x ask.sh app/build.sh
+chmod +x ask.sh app/build.sh tareas/bestmove.sh
 
 say_step "Compilando la app"
 ./app/build.sh

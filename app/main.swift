@@ -2111,7 +2111,7 @@ final class Controller: NSObject {
     let tasksPanel = TasksPanel()
     private var pendingTask: LongTask? = nil          // esperando tu "adelante"
     private var promoteWork: DispatchWorkItem? = nil  // pasa a segundo plano si tarda
-    private var announceQueue: [String] = []
+    private var announceQueue: [(Date, String)] = []
     private var panelDismissed = false
     var taskEffort: String { UserDefaults.standard.string(forKey: "taskEffort") ?? "medium" }
     var showTasksPanel: Bool { UserDefaults.standard.object(forKey: "showTasksPanel") == nil ? true : UserDefaults.standard.bool(forKey: "showTasksPanel") }
@@ -2779,12 +2779,14 @@ final class Controller: NSObject {
         speakWatchdog?.cancel()
         rawNow = ""
         rawByLang = [:]
-        if !announceQueue.isEmpty {
-            let next = announceQueue.removeFirst()
-            state = .idle
-            overlay.show()
-            speak(next, thenIdle: true)
-            return
+        if let (when, next) = announceQueue.first {
+            announceQueue.removeAll()
+            if Date().timeIntervalSince(when) < 20 {
+                state = .idle
+                overlay.show()
+                speak(next, thenIdle: true)
+                return
+            }
         }
         state = .idle
         silent = false
@@ -3156,7 +3158,8 @@ final class Controller: NSObject {
             overlay.show()
             speak(clean, thenIdle: true)
         } else {
-            announceQueue.append(clean)
+            // Solo se guarda el aviso más reciente: los hitos viejos ya no describen la situación actual
+            announceQueue = [(Date(), clean)]
         }
     }
 
