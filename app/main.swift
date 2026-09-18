@@ -168,6 +168,19 @@ func fixTitleCase(_ text: String) -> String {
     return out
 }
 
+/// Mata procesos de Claude Code que quedaron huérfanos de una instancia anterior de la app (padre = launchd).
+func killOrphanClaudeProcesses() {
+    let out = shell("/bin/ps", ["-eo", "pid=,ppid=,command="])
+    for line in out.split(separator: "\n") {
+        let parts = line.trimmingCharacters(in: .whitespaces).split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
+        guard parts.count == 3, let pid = Int32(parts[0]), let ppid = Int32(parts[1]) else { continue }
+        let cmd = String(parts[2])
+        guard ppid == 1, cmd.contains("claude"), cmd.contains("--input-format stream-json"), cmd.contains("--include-partial-messages"), cmd.contains("--chrome") else { continue }
+        kill(pid, SIGTERM)
+        logApp("Terminé un proceso de Claude huérfano (pid \(pid))")
+    }
+}
+
 func shell(_ path: String, _ args: [String]) -> String {
     let p = Process(); p.executableURL = URL(fileURLWithPath: path); p.arguments = args
     let out = Pipe(); p.standardOutput = out; p.standardError = Pipe()
@@ -3170,6 +3183,12 @@ final class Controller: NSObject {
     }
     @objc func quit() { NSApp.terminate(nil) }
 
+    /// Apaga el proceso de conversación y los de todas las tareas.
+    func shutdownProcesses() {
+        claude.stop()
+        for t in tasks.running { t.process?.cancel() }
+    }
+
     // MARK: Menú, tecla y disparador
 
     private func setIcon(_ name: String) {
@@ -3271,9 +3290,18 @@ final class Controller: NSObject {
 var controller: Controller!
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var termSource: DispatchSourceSignal?
+    func applicationWillTerminate(_ n: Notification) { controller?.shutdownProcesses() }
     func applicationDidFinishLaunching(_ n: Notification) {
         rotateAppLog()
         signal(SIGPIPE, SIG_IGN)
+        killOrphanClaudeProcesses()
+        // Si nos cierran con kill/pkill, apagamos antes a los procesos hijos
+        let src = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        src.setEventHandler { controller?.shutdownProcesses(); exit(0) }
+        src.resume()
+        signal(SIGTERM, SIG_IGN)
+        termSource = src
         controller = Controller()
         controller.start()
     }
