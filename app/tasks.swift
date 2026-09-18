@@ -68,6 +68,7 @@ final class LongTask {
         let upper = line.uppercased()
         if upper.hasPrefix("PLAN:") {
             planSummary = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+            if status == .running { steps.removeAll() }   // plan actualizado: el diagrama se reconstruye
             return planSummary.isEmpty ? nil : planSummary
         }
         if let m = rx(#"^(\d+)[.)]\s+(.+)$"#).firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) {
@@ -89,6 +90,7 @@ final class LongTask {
         if upper.hasPrefix("HITO:") {
             let text = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
             milestones.append(text)
+            advanceByText(text)
             return text
         }
         if upper.hasPrefix("RESULTADO:") {
@@ -97,8 +99,27 @@ final class LongTask {
             for i in steps.indices { steps[i].state = .done }
             return text
         }
+        advanceByText(line)
         return nil
     }
+
+    /// Si el texto se parece a un paso pendiente, lo marca como actual (y los anteriores como hechos).
+    private func advanceByText(_ text: String) {
+        let words = Set(normalize(text).split(whereSeparator: { !$0.isLetter }).map(String.init).filter { $0.count > 4 })
+        guard words.count >= 2 else { return }
+        var best = -1; var bestScore = 0.0
+        for (i, st) in steps.enumerated() where st.state != .done {
+            let sw = Set(normalize(st.text).split(whereSeparator: { !$0.isLetter }).map(String.init).filter { $0.count > 4 })
+            guard !sw.isEmpty else { continue }
+            let common = Double(words.intersection(sw).count)
+            let score = common / Double(sw.count)
+            if common >= 2 && score > bestScore { best = i; bestScore = score }
+        }
+        guard best >= 0, bestScore >= 0.4 else { return }
+        for i in steps.indices { if i < best { steps[i].state = .done } else if i == best { steps[i].state = .current } }
+    }
+
+    var lastActivity = Date()
 }
 
 // MARK: - Gestor
@@ -306,7 +327,10 @@ final class TasksPanel: NSObject {
             box.addArrangedSubview(titleRow)
             let statusText: String = {
                 switch t.status {
-                case .running: return "\(t.status.rawValue) · \(t.elapsedText)" + (t.lastToolLabel.isEmpty ? "" : " · \(t.lastToolLabel)")
+                case .running:
+                    let since = Int(Date().timeIntervalSince(t.lastActivity))
+                    let act = t.lastToolLabel.isEmpty ? "" : " · \(t.lastToolLabel) (hace \(since) s, \(t.toolCalls) acciones)"
+                    return "\(t.status.rawValue) · \(t.elapsedText)" + act
                 case .done: return "Terminada en \(t.elapsedText)"
                 default: return t.status.rawValue
                 }

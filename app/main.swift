@@ -2963,7 +2963,7 @@ final class Controller: NSObject {
         logConv("> [a la tarea] \(instruction)")
         t.milestones.append(replyLang == "en" ? "You said: \(instruction)" : "Le dijiste: \(instruction)")
         proc.cancel()   // corta el turno actual; la sesión se retoma en la siguiente orden
-        proc.send("Instrucción del usuario mientras haces la tarea: \"\(instruction)\". Aplícala y continúa la tarea desde donde estaba (revisa el estado actual en Chrome si aplica). Recuerda el protocolo PASO / HITO / RESULTADO.",
+        proc.send("Instrucción del usuario mientras haces la tarea: \"\(instruction)\". Aplícala y continúa la tarea desde donde estaba (revisa el estado actual en Chrome si aplica). Si cambia el plan, escribe primero el PLAN actualizado con pasos numerados. Recuerda el protocolo PASO / HITO / RESULTADO: marca cada paso al empezarlo.",
                   model: proc.currentModel,
                   onStatus: taskStatusHandler(t), onText: taskTextHandler(t), completion: taskCompletionHandler(t))
         tasks.onChange?()
@@ -2972,12 +2972,16 @@ final class Controller: NSObject {
 
     private func taskStatusHandler(_ t: LongTask) -> (String) -> Void {
         { [weak self] l in
-            t.lastToolLabel = l; t.toolCalls += 1; self?.tasks.onChange?()
+            t.lastToolLabel = l; t.toolCalls += 1; t.lastActivity = Date(); self?.tasks.onChange?()
             if t.toolCalls > TaskManager.maxToolCalls { self?.tasks.finish(t, status: .failed, message: "Detuve la tarea \(t.title): demasiados pasos.") }
         }
     }
     private func taskTextHandler(_ t: LongTask) -> (String) -> Void {
-        { [weak self] d in for line in t.ingest(d) { self?.announce(line) }; self?.tasks.onChange?() }
+        { [weak self] d in
+            t.lastActivity = Date()
+            for line in t.ingest(d) { logConv("(hito) \(line)"); self?.announce(line) }
+            self?.tasks.onChange?()
+        }
     }
     private func taskCompletionHandler(_ t: LongTask) -> (String?, Bool) -> Void {
         { [weak self] reply, failed in
@@ -3041,7 +3045,7 @@ final class Controller: NSObject {
         t.deadline = Date().addingTimeInterval(t.deadline.timeIntervalSince(t.startedAt))
         tasks.onChange?()
         logConv("> [tarea en curso] \(t.title)")
-        let go = "Adelante, ejecuta el plan." + (extra.map { " Indicación adicional del usuario: \"\($0)\". Tenla en cuenta." } ?? "") + " Recuerda el protocolo PASO / HITO / RESULTADO."
+        let go = "Adelante, ejecuta el plan." + (extra.map { " Indicación adicional del usuario: \"\($0)\". Si cambia el plan, escribe primero el PLAN actualizado (línea PLAN: y pasos numerados) y luego ejecuta." } ?? "") + " Recuerda el protocolo PASO / HITO / RESULTADO: marca cada paso al empezarlo."
         proc.send(go, model: proc.currentModel,
                   onStatus: taskStatusHandler(t), onText: taskTextHandler(t), completion: taskCompletionHandler(t))
         speak(replyLang == "en" ? "On it. I'll let you know." : "Voy con ello. Te aviso cuando termine.", thenIdle: true)
