@@ -1,6 +1,6 @@
-# Claude Voice
+# Hey Claude
 
-Asistente de voz para macOS que conecta tu micrófono con [Claude Code](https://claude.com/claude-code). Dices **"hey claude"** y le pides cosas: abrir apps o páginas, leer y usar sitios en Chrome, revisar tu correo o calendario, poner recordatorios, crear documentos o simplemente preguntar. Responde con voz, en español o inglés, y muestra un widget flotante estilo Siri con lo que va haciendo.
+Asistente de voz "hey claude" para macOS que conecta tu micrófono con [Claude Code](https://claude.com/claude-code). Dices **"hey claude"** y le pides cosas: abrir apps o páginas, leer y usar sitios en Chrome, revisar tu correo o calendario, poner recordatorios, crear documentos o simplemente preguntar. Responde con voz, en español o inglés, y muestra un widget flotante estilo Siri con lo que va haciendo.
 
 Todo corre en tu Mac con **tu propia cuenta de Claude**. No hay servidores intermedios ni claves de terceros.
 
@@ -26,8 +26,16 @@ Todo corre en tu Mac con **tu propia cuenta de Claude**. No hay servidores inter
 
 ## Instalación
 
+Una sola línea (clona en `~/claude-voice` y ejecuta el instalador):
+
 ```bash
-git clone https://github.com/rafatito2/claude-voice.git ~/claude-voice
+git clone https://github.com/rafatito2/hey-claude.git ~/claude-voice && ~/claude-voice/install.sh
+```
+
+O paso a paso:
+
+```bash
+git clone https://github.com/rafatito2/hey-claude.git ~/claude-voice
 cd ~/claude-voice
 ./install.sh
 ```
@@ -71,7 +79,7 @@ Menú de la barra: escuchar ahora, escribir una orden, nueva conversación, hist
 - El reconocimiento de voz es local (Apple, modo en el dispositivo). Solo el texto de tus órdenes viaja a Claude, con tu cuenta.
 - La app ejecuta comandos en tu Mac en tu nombre. Tiene una lista de prohibidos (borrar, sudo, formatear, apagar, matar procesos, cambiar permisos, enviar correos) que puedes ampliar en `main.swift` (`disallowedTools`).
 - Historial y contexto se guardan en texto plano en `~/claude-voice`. Están en `.gitignore`.
-- Para ver trazas de todo lo que oye (solo para depurar): `defaults write com.rafael.claudevoice debugTrace -bool true` y reinicia la app.
+- Para ver trazas de todo lo que oye (solo para depurar): `defaults write com.heyclaude.voice debugTrace -bool true` y reinicia la app.
 
 ## Desinstalar
 

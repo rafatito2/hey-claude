@@ -5,7 +5,7 @@ set -e
 
 DIR="$HOME/claude-voice"
 APP="$DIR/ClaudeVoice.app"
-LABEL="com.rafael.claudevoice"
+LABEL="com.heyclaude.voice"
 AGENT="$HOME/Library/LaunchAgents/$LABEL.plist"
 
 say_step() { printf "\n\033[1m==> %s\033[0m\n" "$1"; }

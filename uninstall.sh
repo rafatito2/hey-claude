@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Desinstala Claude Voice: cierra la app, quita el arranque automático y borra la app compilada.
 # Conserva tu configuración e historial en ~/claude-voice (bórralos a mano si quieres).
-LABEL="com.rafael.claudevoice"
+LABEL="com.heyclaude.voice"
 AGENT="$HOME/Library/LaunchAgents/$LABEL.plist"
 
 pkill -x ClaudeVoice >/dev/null 2>&1 || true

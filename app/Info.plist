@@ -2,9 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>Claude Voice</string>
-  <key>CFBundleDisplayName</key><string>Claude Voice</string>
-  <key>CFBundleIdentifier</key><string>com.rafael.claudevoice</string>
+  <key>CFBundleName</key><string>Hey Claude</string>
+  <key>CFBundleDisplayName</key><string>Hey Claude</string>
+  <key>CFBundleIdentifier</key><string>com.heyclaude.voice</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>CFBundleShortVersionString</key><string>0.1</string>
   <key>CFBundleExecutable</key><string>ClaudeVoice</string>
