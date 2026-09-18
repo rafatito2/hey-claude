@@ -27,6 +27,8 @@ final class LongTask {
     var deadline: Date
     var toolCalls = 0
     var process: PersistentClaude?
+    var lastMilestoneAt = Date()
+    var lastStatusRequestAt = Date.distantPast
     private var buffer = ""
 
     init(title: String, timeout: TimeInterval) {
@@ -52,6 +54,7 @@ final class LongTask {
             buffer = String(buffer[buffer.index(after: nl)...])
             if let s = handle(line: line) { spoken.append(s) }
         }
+        if !spoken.isEmpty { lastMilestoneAt = Date() }
         return spoken
     }
 
@@ -164,9 +167,22 @@ final class TaskManager {
     }
     var hasFinished: Bool { tasks.contains { $0.status != .running && $0.status != .planning && $0.status != .waiting } }
 
+    static var statusInterval: TimeInterval { UserDefaults.standard.object(forKey: "taskStatusInterval") as? Double ?? 40 }
+
     private func tick() {
         for t in running where t.status == .running && Date() > t.deadline {
             finish(t, status: .timedOut, message: "Se acabó el tiempo para la tarea: \(t.title).")
+        }
+        // Si la tarea lleva un rato sin contar nada, se le pide una línea de estado (la responde entre dos acciones)
+        let interval = TaskManager.statusInterval
+        for t in running where t.status == .running {
+            let quiet = Date().timeIntervalSince(t.lastMilestoneAt)
+            let sinceAsk = Date().timeIntervalSince(t.lastStatusRequestAt)
+            if quiet > interval && sinceAsk > interval, let p = t.process, p.isBusy {
+                if p.steer("ESTADO: escribe ahora UNA línea \"HITO: <qué está pasando y qué vas a hacer>\" (una frase, en el idioma del usuario) y continúa la tarea sin detenerte.") {
+                    t.lastStatusRequestAt = Date()
+                }
+            }
         }
         if !running.isEmpty { onChange?() }   // refresca el tiempo transcurrido
     }
@@ -412,7 +428,8 @@ let taskPrompt = """
 
 Estás ejecutando una TAREA LARGA en segundo plano y el usuario no está mirando: sigue un protocolo estricto de texto, porque la app solo lee en voz alta ciertas líneas.
 - Cuando te pidan el plan: escribe una línea "PLAN: <dos frases: qué harás y cuánto tardarás>" y luego hasta 6 pasos numerados ("1. ...", "2. ..."). No ejecutes nada hasta que te digan "adelante".
-- Al ejecutar, al empezar cada paso escribe una línea "PASO n: <texto corto>". Cuando ocurra algo importante (progreso notable, problema, cambio de plan) escribe "HITO: <una frase>". No narres cada acción menor; el resto del texto no se lee en voz alta.
+- Al ejecutar, al empezar cada paso escribe una línea "PASO n: <texto corto>". Cuando ocurra algo importante (progreso notable, problema, cambio de plan) escribe "HITO: <una frase>", y como mínimo una línea HITO cada 3 o 4 acciones aunque no haya novedades grandes (en un juego: cada jugada tuya). No narres detalles menores; el resto del texto no se lee en voz alta.
+- Si recibes un mensaje que empieza por "ESTADO:", contesta de inmediato con una sola línea HITO y sigue trabajando.
 - Si algo falla, reintenta de otra forma antes de rendirte. No pidas confirmaciones intermedias: decide tú.
 - Al terminar escribe una única línea "RESULTADO: <una o dos frases con el resultado>".
 - Juego limpio: nunca juegues contra personas con ayuda de IA en sitios como chess.com; usa los bots del sitio o el modo de análisis.
