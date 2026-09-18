@@ -21,6 +21,8 @@ Todo corre en tu Mac con **tu propia cuenta de Claude**. No hay servidores inter
 - **Respuestas instantáneas sin modelo**: hora, fecha, batería y recordatorios pendientes se contestan en la app, en cero segundos y sin gastar cuota.
 - **Ve tu pantalla y tu portapapeles**: "qué dice este error en mi pantalla", "resume lo que copié", "traduce lo seleccionado" (pantalla y selección piden permiso de Grabación de pantalla y Accesibilidad la primera vez).
 - **Dictado en cualquier app**: "teclea: hola profesor, le adjunto la tarea" escribe el texto en la ventana activa.
+- **Tareas largas en segundo plano**: si dices "en segundo plano", "juega una partida", "investiga a fondo", "haz un informe"…, Claude primero te dice el plan en dos frases y espera tu "adelante". Luego la tarea corre en un proceso propio con herramientas ampliadas (scripts, instalar programas) y tú recuperas el asistente. Solo te lee los hitos importantes, te avisa al terminar con voz y notificación, y puedes preguntar "cómo vas" o decir "cancela la tarea". Si una orden normal pasa de 40 segundos, se convierte sola en tarea de segundo plano. Límite de tiempo por tarea (30 min, o "tómate una hora").
+- **Panel de tareas**: un segundo panel sobre el widget con cada tarea, su tiempo, los pasos del plan como línea de tiempo (hechos, en curso, pendientes), el último hito y el resultado. Se muestra u oculta desde el menú.
 - **Historial en la app**: ventana con las conversaciones, buscador y botón para retomar una anterior.
 - **Widget**: se encoge a un círculo en reposo, se puede arrastrar, tema claro u oscuro, orden escrita con ⌥⌘T para lugares con gente.
 
@@ -77,6 +79,8 @@ Después:
 | "recuérdame en 10 minutos tomar agua" | Recordatorio con voz y notificación |
 | "recuerda que mi carrera es ingeniería" | Lo guarda en `contexto.md` |
 | "nueva conversación" | Empieza de cero |
+| "en segundo plano, investiga X y hazme un resumen" | Plan, confirmación y tarea en segundo plano |
+| "cómo vas" / "cancela la tarea" | Estado o cancelación de la tarea |
 | "gracias, listo" | Cierra la conversación |
 
 Menú de la barra: escuchar ahora, escribir una orden, nueva conversación, historial, contexto, vocabulario y Ajustes (voces, velocidad, espera tras responder, sonido, atajos de teclado, tema, modelos).
@@ -85,7 +89,8 @@ Menú de la barra: escuchar ahora, escribir una orden, nueva conversación, hist
 
 | Archivo | Para qué |
 |---|---|
-| `app/main.swift` | Toda la app (AppKit + Speech + AVFoundation) |
+| `app/main.swift` | La app (AppKit + Speech + AVFoundation) |
+| `app/tasks.swift` | Tareas largas en segundo plano y panel de progreso |
 | `app/build.sh` | Compila `ClaudeVoice.app` |
 | `contexto.md` | Tu memoria personal (no se sube al repo) |
 | `vocabulario.txt` | Palabras que el reconocedor debe conocer |

@@ -1876,6 +1876,24 @@ final class PersistentClaude {
     private var stdinHandle: FileHandle?
     private var model: String?
     private var contextStamp: Date?
+    private let tools: String
+    private let extraPrompt: String
+    private let ownSession: Bool
+    private var ownSid: String? = nil
+
+    /// - ownSession: la tarea usa una sesión propia y no toca la conversación principal.
+    init(tools: String = allowedTools, extraPrompt: String = "", ownSession: Bool = false) {
+        self.tools = tools
+        self.extraPrompt = extraPrompt
+        self.ownSession = ownSession
+    }
+
+    /// Cambia los callbacks del turno en curso (para pasar una orden a segundo plano).
+    func rebind(onStatus: @escaping (String) -> Void, onText: @escaping (String) -> Void, completion: @escaping (String?, Bool) -> Void) {
+        guard let t = turn else { return }
+        turn = Turn(onStatus: onStatus, onText: onText, completion: completion, reply: t.reply, failed: t.failed)
+    }
+    var isBusy: Bool { turn != nil }
     private struct Turn {
         let onStatus: (String) -> Void
         let onText: (String) -> Void
@@ -1900,10 +1918,13 @@ final class PersistentClaude {
         p.executableURL = URL(fileURLWithPath: claudeBin)
         var args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
                     "--include-partial-messages", "--chrome",
-                    "--allowedTools", allowedTools, "--disallowedTools", disallowedTools,
-                    "--append-system-prompt", systemPrompt()]
+                    "--allowedTools", tools, "--disallowedTools", disallowedTools,
+                    "--append-system-prompt", systemPrompt() + extraPrompt]
         if let model, !model.isEmpty { args += ["--model", model] }
-        if let sid = readSession() { args += ["--resume", sid] }
+        if ownSession {
+            if let sid = ownSid { args += ["--resume", sid] }
+            else { let sid = UUID().uuidString.lowercased(); ownSid = sid; args += ["--session-id", sid] }
+        } else if let sid = readSession() { args += ["--resume", sid] }
         else {
             let sid = UUID().uuidString.lowercased()
             args += ["--session-id", sid]
@@ -1987,7 +2008,7 @@ final class PersistentClaude {
 
     func send(_ text: String, model: String?, onStatus: @escaping (String) -> Void, onText: @escaping (String) -> Void, completion: @escaping (String?, Bool) -> Void) {
         let contextChanged = contextStamp != contextModified()
-        if !isRunning || model != self.model || contextChanged || readSession() == nil {
+        if !isRunning || model != self.model || contextChanged || (!ownSession && readSession() == nil) {
             if isRunning { logApp("Reinicio de Claude Code: \(!isRunning ? "no corría" : model != self.model ? "cambio de modelo" : contextChanged ? "cambió el contexto" : "sesión nueva")") }
             start(model: model)
         }
@@ -2029,8 +2050,15 @@ final class Controller: NSObject {
     let overlay = Overlay()
     let listener = Listener()
     let speaker = Speaker()
-    let claude = PersistentClaude()
+    var claude = PersistentClaude()
     let earcons = Earcons()
+    let tasks = TaskManager()
+    let tasksPanel = TasksPanel()
+    private var pendingTask: LongTask? = nil          // esperando tu "adelante"
+    private var promoteWork: DispatchWorkItem? = nil  // pasa a segundo plano si tarda
+    private var announceQueue: [String] = []
+    private var panelDismissed = false
+    var showTasksPanel: Bool { UserDefaults.standard.object(forKey: "showTasksPanel") == nil ? true : UserDefaults.standard.bool(forKey: "showTasksPanel") }
     let media = MediaControl()
     let reminders = Reminders()
     let input = InputPanel()
@@ -2113,6 +2141,13 @@ final class Controller: NSObject {
     private func begin() {
         settingsWindow.controller = self
         historyWindow.controller = self
+        tasks.onChange = { [weak self] in self?.refreshTasksPanel() }
+        tasks.announce = { [weak self] text in self?.announce(text) }
+        tasksPanel.onCancelId = { [weak self] id in
+            guard let self, let t = self.tasks.tasks.first(where: { $0.id == id }) else { return }
+            self.tasks.cancel(t)
+        }
+        tasksPanel.onClose = { [weak self] in self?.panelDismissed = true }
         overlay.onStop = { [weak self] in self?.cancelPressed() }
         overlay.onPause = { [weak self] in self?.pausePressed() }
         overlay.onTap = { [weak self] in self?.manualListen() }
@@ -2321,6 +2356,33 @@ final class Controller: NSObject {
         listener.restart()   // sigue escuchando por si dices "hey claude" mientras piensa
         commandText = ""
         let n = normalize(cmd).trimmingCharacters(in: .punctuationCharacters)
+        // Tareas largas: confirmación pendiente, estado, cancelación o detección
+        if let draft = pendingTask {
+            pendingTask = nil
+            if matches(confirmRegex, n) { startTask(draft); return }
+            if matches(denyRegex, n) {
+                tasks.finish(draft, status: .cancelled, message: nil)
+                speak(replyLang == "en" ? "Okay, I won't do it." : "Vale, no lo hago.", thenIdle: true); return
+            }
+            tasks.finish(draft, status: .cancelled, message: nil)   // otra orden: descarta el plan y sigue normal
+        }
+        if matches(taskStatusRegex, n) {
+            let running = tasks.running
+            if running.isEmpty { speak(replyLang == "en" ? "I have no tasks running." : "No tengo ninguna tarea en curso.", thenIdle: false); return }
+            let parts = running.map { t -> String in
+                let last = t.lastMilestone.isEmpty ? (replyLang == "en" ? "just started" : "recién empieza") : t.lastMilestone
+                return "\(t.title): \(last), \(t.elapsedText)"
+            }
+            speak(parts.joined(separator: ". "), thenIdle: false); return
+        }
+        if matches(taskCancelRegex, n) {
+            if tasks.running.isEmpty { speak(replyLang == "en" ? "There's nothing to cancel." : "No hay ninguna tarea que cancelar.", thenIdle: false); return }
+            tasks.cancelAll()
+            speak(replyLang == "en" ? "Cancelled." : "Cancelada.", thenIdle: false); return
+        }
+        if matches(longTaskRegex, n) {
+            planTask(cmd, n: n); return
+        }
         if matches(onlyStopRegex, n) {
             // "para", "espera": no hay orden; solo calla y vuelve a reposo
             logConv("(sin orden: \(cmd))")
@@ -2419,6 +2481,12 @@ final class Controller: NSObject {
 
     private func runClaude(_ cmd: String, model: String?, retry: Bool) {
         currentCmd = cmd.components(separatedBy: "\n\n[").first ?? cmd
+        promoteWork?.cancel()
+        if !silent {
+            let w = DispatchWorkItem { [weak self] in self?.promoteToBackground() }
+            promoteWork = w
+            DispatchQueue.main.asyncAfter(deadline: .now() + 40, execute: w)
+        }
         streamText = ""
         streamSpokenUpTo = 0
         processDone = false
@@ -2435,6 +2503,7 @@ final class Controller: NSObject {
             self.flushSentences(final: false)
         }, completion: { [weak self] reply, failed in
             guard let self, self.state == .thinking || self.state == .speaking else { return }
+            self.promoteWork?.cancel(); self.promoteWork = nil
             if failed && retry && self.streamText.isEmpty && self.claude.lastFailureWasExit {
                 // Solo si el proceso murió (p. ej. sesión que ya no existe): sesión nueva y reintento
                 logApp("El proceso de Claude murió; reinicio con sesión nueva y reintento")
@@ -2636,6 +2705,13 @@ final class Controller: NSObject {
         speakWatchdog?.cancel()
         rawNow = ""
         rawByLang = [:]
+        if !announceQueue.isEmpty {
+            let next = announceQueue.removeFirst()
+            state = .idle
+            overlay.show()
+            speak(next, thenIdle: true)
+            return
+        }
         state = .idle
         silent = false
         followUp = false
@@ -2842,6 +2918,147 @@ final class Controller: NSObject {
         return nil
     }
 
+    // MARK: Tareas largas
+
+    private func taskTimeout(from n: String) -> TimeInterval {
+        if let m = taskTimeoutRegex.firstMatch(in: n, range: NSRange(location: 0, length: (n as NSString).length)),
+           let num = parseNumber((n as NSString).substring(with: m.range(at: 2))) {
+            let unit = (n as NSString).substring(with: m.range(at: 3))
+            return unit.hasPrefix("hora") || unit.hasPrefix("hour") ? Double(num) * 3600 : Double(num) * 60
+        }
+        return 30 * 60
+    }
+
+    /// Pide el plan a un proceso propio y espera tu confirmación por voz.
+    private func planTask(_ cmd: String, n: String) {
+        panelDismissed = false
+        let t = LongTask(title: cmd, timeout: taskTimeout(from: n))
+        let proc = PersistentClaude(tools: allowedTools + "," + taskExtraTools, extraPrompt: taskPrompt, ownSession: true)
+        t.process = proc
+        tasks.add(t)
+        state = .thinking
+        overlay.showPause(true)
+        overlay.set("Planificando · tarea", cmd, .thinking)
+        statusLine.title = "Planificando tarea"
+        setIcon("ellipsis.circle.fill")
+        logConv("> [tarea] \(cmd)")
+        streamText = ""; streamSpokenUpTo = 0; processDone = false
+        var planText = ""
+        let tiers = loadModelTiers()
+        let normal = tiers["normal"] ?? "sonnet"
+        proc.send("Tarea: \(cmd)\n\nEscribe solo el PLAN (una línea \"PLAN: ...\" y los pasos numerados). No ejecutes nada todavía.", model: normal == "default" ? nil : normal,
+                  onStatus: { [weak self] l in t.lastToolLabel = l; self?.tasks.onChange?() },
+                  onText: { [weak self] d in
+                      planText += d
+                      _ = t.ingest(d)
+                      self?.tasks.onChange?()
+                  },
+                  completion: { [weak self] reply, failed in
+                      guard let self else { return }
+                      _ = t.flush()
+                      if failed { self.tasks.finish(t, status: .failed, message: nil); self.processDone = true; self.speak("No pude planificar la tarea.", thenIdle: true); return }
+                      t.status = .waiting
+                      self.pendingTask = t
+                      self.tasks.onChange?()
+                      let summary = t.planSummary.isEmpty ? (reply ?? "").prefix(300).description : t.planSummary
+                      logConv("< (plan) \(summary)")
+                      self.processDone = true
+                      let ask = self.replyLang == "en" ? " Shall I go ahead?" : " ¿Arranco?"
+                      self.speak(summary + ask, thenIdle: false)
+                  })
+        if showTasksPanel { refreshTasksPanel() }
+    }
+
+    /// Ejecuta la tarea en su proceso propio y devuelve el control.
+    private func startTask(_ t: LongTask) {
+        guard let proc = t.process else { return }
+        t.status = .running
+        t.runStartedAt = Date()
+        t.deadline = Date().addingTimeInterval(t.deadline.timeIntervalSince(t.startedAt))
+        tasks.onChange?()
+        logConv("> [tarea en curso] \(t.title)")
+        proc.send("Adelante, ejecuta el plan. Recuerda el protocolo PASO / HITO / RESULTADO.", model: proc.currentModel,
+                  onStatus: { [weak self] l in t.lastToolLabel = l; t.toolCalls += 1; self?.tasks.onChange?()
+                      if t.toolCalls > TaskManager.maxToolCalls { self?.tasks.finish(t, status: .failed, message: "Detuve la tarea \(t.title): demasiados pasos.") } },
+                  onText: { [weak self] d in for line in t.ingest(d) { self?.announce(line) }; self?.tasks.onChange?() },
+                  completion: { [weak self] reply, failed in
+                      guard let self else { return }
+                      for line in t.flush() { self.announce(line) }
+                      guard t.status == .running else { return }
+                      let final = t.result ?? (reply ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                      t.result = final
+                      logConv("< (tarea) \(final.prefix(300))")
+                      if failed { self.tasks.finish(t, status: .failed, message: "La tarea \(t.title) falló. \(final.prefix(200))") }
+                      else { self.tasks.finish(t, status: .done, message: t.milestones.isEmpty && t.steps.isEmpty ? "Terminé: \(final.prefix(240))" : "Terminé la tarea. \(final.prefix(240))") }
+                  })
+        speak(replyLang == "en" ? "On it. I'll let you know." : "Voy con ello. Te aviso cuando termine.", thenIdle: true)
+        if showTasksPanel { refreshTasksPanel() }
+    }
+
+    /// Una orden normal que se alarga pasa a segundo plano y libera el asistente.
+    private func promoteToBackground() {
+        guard state == .thinking, !processDone, !silent else { return }
+        panelDismissed = false
+        let t = LongTask(title: currentCmd, timeout: 30 * 60)
+        t.status = .running
+        t.runStartedAt = Date()
+        t.lastToolLabel = overlayLastReply.isEmpty ? "" : ""
+        t.process = claude
+        // El proceso actual se queda con la tarea; la conversación sigue en uno nuevo (sesión nueva)
+        let taskProc = claude
+        claude = PersistentClaude()
+        clearSession()
+        logConv("--- la orden pasó a segundo plano; nueva conversación ---")
+        tasks.add(t)
+        taskProc.rebind(onStatus: { [weak self] l in t.lastToolLabel = l; t.toolCalls += 1; self?.tasks.onChange?() },
+                        onText: { [weak self] d in for line in t.ingest(d) { self?.announce(line) } },
+                        completion: { [weak self] reply, failed in
+                            guard let self else { return }
+                            for line in t.flush() { self.announce(line) }
+                            guard t.status == .running else { return }
+                            let final = (reply ?? t.result ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                            t.result = final
+                            logConv("< (segundo plano) \(final.prefix(300))")
+                            self.tasks.finish(t, status: failed ? .failed : .done, message: (failed ? "La tarea falló. " : "Terminé: ") + final.prefix(240))
+                            taskProc.stop()
+                        })
+        processDone = true
+        streamText = ""
+        speaker.stop()
+        speak(replyLang == "en" ? "This is taking a while. I'll keep working in the background and let you know." : "Esto va para largo. Sigo en segundo plano y te aviso cuando termine.", thenIdle: true)
+        let tiers = loadModelTiers(); let normal = tiers["normal"] ?? "sonnet"
+        claude.prewarm(model: normal == "default" ? nil : normal)
+        if showTasksPanel { refreshTasksPanel() }
+    }
+
+    /// Dice algo cuando el asistente está libre; si no, lo guarda para después.
+    func announce(_ text: String) {
+        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        if state == .idle {
+            overlay.show()
+            speak(clean, thenIdle: true)
+        } else {
+            announceQueue.append(clean)
+        }
+    }
+
+    func refreshTasksPanel() {
+        let visible = tasks.tasks.filter { t in
+            t.status == .running || t.status == .planning || t.status == .waiting || Date().timeIntervalSince(t.startedAt) < 15 * 60
+        }
+        if visible.isEmpty || !showTasksPanel || panelDismissed { tasksPanel.hide(); return }
+        tasksPanel.render(visible)
+        tasksPanel.show(above: overlay.panel.frame)
+    }
+
+    @objc func toggleTasksPanel(_ sender: NSMenuItem) {
+        UserDefaults.standard.set(!showTasksPanel, forKey: "showTasksPanel")
+        sender.state = showTasksPanel ? .on : .off
+        refreshTasksPanel()
+    }
+    @objc func cancelAllTasks() { tasks.cancelAll() }
+
     /// Botón ■ del widget: corta a Claude (hablando o generando) y sigue escuchando.
     func pausePressed() {
         switch state {
@@ -2859,6 +3076,8 @@ final class Controller: NSObject {
 
     /// Botón ✕ del widget: termina la conversación de inmediato y cierra el widget.
     func cancelPressed() {
+        promoteWork?.cancel(); promoteWork = nil
+        if let d = pendingTask { pendingTask = nil; tasks.finish(d, status: .cancelled, message: nil) }
         speakWatchdog?.cancel()
         speaker.onFinish = nil
         speaker.stop()
@@ -2948,6 +3167,10 @@ final class Controller: NSObject {
         let newConv = NSMenuItem(title: "Nueva conversación", action: #selector(newConversation), keyEquivalent: "")
         newConv.target = self; menu.addItem(newConv)
         menu.addItem(.separator())
+        let panelItem = NSMenuItem(title: "Mostrar panel de tareas", action: #selector(toggleTasksPanel(_:)), keyEquivalent: "")
+        panelItem.target = self; panelItem.state = showTasksPanel ? .on : .off; menu.addItem(panelItem)
+        let cancelTasks = NSMenuItem(title: "Cancelar tareas en curso", action: #selector(cancelAllTasks), keyEquivalent: "")
+        cancelTasks.target = self; menu.addItem(cancelTasks)
         remindersLine = NSMenuItem(title: "Sin recordatorios pendientes", action: nil, keyEquivalent: "")
         remindersLine.isEnabled = false
         menu.addItem(remindersLine)

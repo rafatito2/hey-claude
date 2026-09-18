@@ -7,7 +7,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 swiftc -O -swift-version 5 \
   -framework AppKit -framework Speech -framework AVFoundation -framework Carbon \
-  -o "$APP/Contents/MacOS/ClaudeVoice" main.swift
+  -o "$APP/Contents/MacOS/ClaudeVoice" main.swift tasks.swift
 cp Info.plist "$APP/Contents/Info.plist"
 cp Assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 codesign --force -s - "$APP"
