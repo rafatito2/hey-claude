@@ -26,6 +26,16 @@ Todo corre en tu Mac con **tu propia cuenta de Claude**. No hay servidores inter
 - [Claude Code](https://claude.com/claude-code) instalado y con sesión iniciada (`claude`). Funciona con la suscripción Pro o Max; no requiere API key.
 - Opcional: extensión [Claude in Chrome](https://claude.com/chrome) para navegar; voces "Mejorada" de Apple para mejor sonido.
 
+## Cuenta de Claude
+
+Hey Claude no tiene inicio de sesión propio: usa la sesión de **Claude Code**, y la cuenta vive ahí. Solo se hace una vez:
+
+1. Instala Claude Code (instrucciones oficiales en [claude.com/claude-code](https://claude.com/claude-code)).
+2. Abre Terminal y ejecuta `claude`. La primera vez abre el navegador para iniciar sesión con tu cuenta de Claude (suscripción Pro o Max). Con eso la sesión queda guardada en tu Mac.
+3. Ejecuta el instalador de abajo. Comprueba que la sesión exista y, si no, te lo dice.
+
+Cada orden de voz corre con tu cuenta y tu suscripción. La app no guarda credenciales ni necesita API key. Para cambiar de cuenta, vuelve a `claude` y usa `/logout` y luego inicia sesión de nuevo; la app usa la sesión que tenga Claude Code.
+
 ## Instalación
 
 Una sola línea (clona en `~/claude-voice` y ejecuta el instalador):
