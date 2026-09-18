@@ -1,0 +1,9 @@
+# Palabras que el reconocedor de voz debe conocer (una por línea).
+# Copia este archivo como vocabulario.txt y agrega nombres, siglas y apps que uses.
+Claude
+Chrome
+Safari
+YouTube
+Spotify
+WhatsApp
+Gmail

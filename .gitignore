@@ -1,0 +1,19 @@
+# App compilada
+ClaudeVoice.app/
+
+# Datos personales y de sesión (nunca subir)
+contexto.md
+vocabulario.txt
+voice.log
+app.log
+.session
+.session_time
+recordatorios.json
+.trigger
+.say
+
+# Generados
+*.shortcut
+*.plist
+!app/Info.plist
+.DS_Store

@@ -1,0 +1,7 @@
+# Qué modelo usa Claude Voice según la orden. Alias válidos: haiku, sonnet, opus, default
+# simple  = preguntas cortas (hora, fecha, cuentas, abrir una app o página)
+# normal  = todo lo demás (Chrome, revisar páginas, tareas de varios pasos)
+# profundo = cuando dices "piensa bien", "a fondo" o "con calma"
+simple=haiku
+normal=sonnet
+profundo=default
