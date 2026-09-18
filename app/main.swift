@@ -997,6 +997,7 @@ final class SettingsWindow: NSObject {
     private let themeCheck = NSButton(checkboxWithTitle: "Tema claro", target: nil, action: nil)
     private let indicatorCheck = NSButton(checkboxWithTitle: "Indicador pequeño en reposo", target: nil, action: nil)
     private let soundCheck = NSButton(checkboxWithTitle: "Sonido al enviar una orden", target: nil, action: nil)
+    private let taskEffortPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let listenKeyPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let typeKeyPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let modelPopups: [String: NSPopUpButton] = ["simple": NSPopUpButton(), "normal": NSPopUpButton(), "profundo": NSPopUpButton()]
@@ -1055,6 +1056,8 @@ final class SettingsWindow: NSObject {
             p.addItems(withTitles: Controller.hotkeyPresets.map { $0.0 })
             p.target = self; p.action = #selector(hotkeyChanged(_:))
         }
+        taskEffortPopup.addItems(withTitles: ["Rápida (razona poco)", "Equilibrada", "Cuidadosa (razona mucho)"])
+        taskEffortPopup.target = self; taskEffortPopup.action = #selector(taskEffortChanged)
         for (k, p) in modelPopups {
             p.addItems(withTitles: ["Haiku (rápido y ligero)", "Sonnet (equilibrado)", "Opus (potente)", "Fable (el más potente)"])
             p.target = self; p.action = #selector(modelChanged(_:))
@@ -1085,6 +1088,7 @@ final class SettingsWindow: NSObject {
             row("Órdenes simples:", modelPopups["simple"]!),
             row("Órdenes normales:", modelPopups["normal"]!),
             row("Cuando pides pensar a fondo:", modelPopups["profundo"]!),
+            row("Velocidad de tareas largas:", taskEffortPopup),
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -1135,6 +1139,7 @@ final class SettingsWindow: NSObject {
         rateLabel.stringValue = rateText(Double(c.speaker.rate))
         waitStepper.doubleValue = Double(c.followUpSeconds)
         waitLabel.stringValue = "\(c.followUpSeconds) segundos"
+        taskEffortPopup.selectItem(at: ["low": 0, "medium": 1, "high": 2][c.taskEffort] ?? 1)
         listenKeyPopup.selectItem(at: Controller.listenHotkey)
         typeKeyPopup.selectItem(at: Controller.typeHotkey)
         themeCheck.state = c.overlay.isLight ? .on : .off
@@ -1182,6 +1187,9 @@ final class SettingsWindow: NSObject {
     }
     @objc private func soundChanged() {
         UserDefaults.standard.set(soundCheck.state == .on, forKey: "sendSound")
+    }
+    @objc private func taskEffortChanged() {
+        UserDefaults.standard.set(["low", "medium", "high"][max(0, taskEffortPopup.indexOfSelectedItem)], forKey: "taskEffort")
     }
     @objc private func hotkeyChanged(_ sender: NSPopUpButton) {
         UserDefaults.standard.set(listenKeyPopup.indexOfSelectedItem, forKey: "hotkeyListen")
@@ -1893,12 +1901,16 @@ final class PersistentClaude {
     private let extraPrompt: String
     private let ownSession: Bool
     private var ownSid: String? = nil
+    /// "low" / "medium" / "high": cuánto razona el modelo. Cambiarlo reinicia el proceso en la siguiente orden.
+    var effort: String? = nil
+    private var startedEffort: String? = nil
 
     /// - ownSession: la tarea usa una sesión propia y no toca la conversación principal.
-    init(tools: String = allowedTools, extraPrompt: String = "", ownSession: Bool = false) {
+    init(tools: String = allowedTools, extraPrompt: String = "", ownSession: Bool = false, effort: String? = nil) {
         self.tools = tools
         self.extraPrompt = extraPrompt
         self.ownSession = ownSession
+        self.effort = effort
     }
 
     /// Cambia los callbacks del turno en curso (para pasar una orden a segundo plano).
@@ -1934,6 +1946,8 @@ final class PersistentClaude {
                     "--allowedTools", tools, "--disallowedTools", disallowedTools,
                     "--append-system-prompt", systemPrompt() + extraPrompt]
         if let model, !model.isEmpty { args += ["--model", model] }
+        if let effort { args += ["--effort", effort] }
+        startedEffort = effort
         if ownSession {
             if let sid = ownSid { args += ["--resume", sid] }
             else { let sid = UUID().uuidString.lowercased(); ownSid = sid; args += ["--session-id", sid] }
@@ -1949,6 +1963,7 @@ final class PersistentClaude {
         p.currentDirectoryURL = baseDir
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = "\(homeDir.path)/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+        if effort == "low" { env["MAX_THINKING_TOKENS"] = "1024" }   // rápido: poco razonamiento interno
         p.environment = env
         let inPipe = Pipe(), outPipe = Pipe(), errPipe = Pipe()
         p.standardInput = inPipe
@@ -2021,7 +2036,7 @@ final class PersistentClaude {
 
     func send(_ text: String, model: String?, onStatus: @escaping (String) -> Void, onText: @escaping (String) -> Void, completion: @escaping (String?, Bool) -> Void) {
         let contextChanged = contextStamp != contextModified()
-        if !isRunning || model != self.model || contextChanged || (!ownSession && readSession() == nil) {
+        if !isRunning || model != self.model || contextChanged || effort != startedEffort || (!ownSession && readSession() == nil) {
             if isRunning { logApp("Reinicio de Claude Code: \(!isRunning ? "no corría" : model != self.model ? "cambio de modelo" : contextChanged ? "cambió el contexto" : "sesión nueva")") }
             start(model: model)
         }
@@ -2071,6 +2086,7 @@ final class Controller: NSObject {
     private var promoteWork: DispatchWorkItem? = nil  // pasa a segundo plano si tarda
     private var announceQueue: [String] = []
     private var panelDismissed = false
+    var taskEffort: String { UserDefaults.standard.string(forKey: "taskEffort") ?? "medium" }
     var showTasksPanel: Bool { UserDefaults.standard.object(forKey: "showTasksPanel") == nil ? true : UserDefaults.standard.bool(forKey: "showTasksPanel") }
     let media = MediaControl()
     let reminders = Reminders()
@@ -2962,6 +2978,8 @@ final class Controller: NSObject {
         guard let proc = t.process else { return }
         logConv("> [a la tarea] \(instruction)")
         t.milestones.append(replyLang == "en" ? "You said: \(instruction)" : "Le dijiste: \(instruction)")
+        if matches(rx(#"\b(rapido|rapida|apurate|date prisa|faster|hurry|quick|quickly)\b"#), normalize(instruction)) { proc.effort = "low" }
+        if matches(rx(#"\b(despacio|con calma|cuidado|mas lento|slower|carefully)\b"#), normalize(instruction)) { proc.effort = "high" }
         proc.cancel()   // corta el turno actual; la sesión se retoma en la siguiente orden
         proc.send("Instrucción del usuario mientras haces la tarea: \"\(instruction)\". Aplícala y continúa la tarea desde donde estaba (revisa el estado actual en Chrome si aplica). Si cambia el plan, escribe primero el PLAN actualizado con pasos numerados. Recuerda el protocolo PASO / HITO / RESULTADO: marca cada paso al empezarlo.",
                   model: proc.currentModel,
@@ -3000,7 +3018,8 @@ final class Controller: NSObject {
     private func planTask(_ cmd: String, n: String) {
         panelDismissed = false
         let t = LongTask(title: cmd, timeout: taskTimeout(from: n))
-        let proc = PersistentClaude(tools: allowedTools + "," + taskExtraTools, extraPrompt: taskPrompt, ownSession: true)
+        let fast = matches(rx(#"\b(rapido|rapida|apurate|date prisa|faster|hurry|quick|quickly)\b"#), n)
+        let proc = PersistentClaude(tools: allowedTools + "," + taskExtraTools, extraPrompt: taskPrompt, ownSession: true, effort: fast ? "low" : taskEffort)
         t.process = proc
         tasks.add(t)
         state = .thinking
@@ -3039,6 +3058,7 @@ final class Controller: NSObject {
     /// Ejecuta la tarea en su proceso propio y devuelve el control.
     private func startTask(_ t: LongTask, extra: String? = nil) {
         guard let proc = t.process else { return }
+        if let extra, matches(rx(#"\b(rapido|rapida|apurate|date prisa|faster|hurry|quick|quickly)\b"#), normalize(extra)) { proc.effort = "low" }
         if let extra { t.milestones.append(replyLang == "en" ? "You said: \(extra)" : "Le dijiste: \(extra)"); logConv("> [al plan] \(extra)") }
         t.status = .running
         t.runStartedAt = Date()
