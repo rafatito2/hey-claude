@@ -2133,7 +2133,7 @@ final class Controller: NSObject {
     private var remindersLine: NSMenuItem!
     private var listenMenuItem: NSMenuItem?
     private var typeMenuItem: NSMenuItem?
-    private var state: State = .idle
+    private var state: State = .idle { didSet { if (oldValue == .idle) != (state == .idle) { updateEscapeHotkey() } } }
     private var followUp = false
     private var commandText = ""
     private var segmentPrefix = ""   // texto ya reconocido antes de un reinicio automático
@@ -2150,6 +2150,7 @@ final class Controller: NSObject {
     private var statusLine: NSMenuItem!
     private var hotKeyRef: EventHotKeyRef?
     private var hotKeyRef2: EventHotKeyRef?
+    private var escHotKeyRef: EventHotKeyRef?   // Esc solo mientras Claude escucha, piensa o habla
     private var smoothLevel: CGFloat = 0
     private var overlayLastReply = ""
     private var screenshotToDelete: URL? = nil
@@ -3355,12 +3356,28 @@ final class Controller: NSObject {
         typeMenuItem?.title = "Escribir una orden… (\(t.0))"
     }
 
+    /// Esc cancela la orden en curso (como el botón ■). Se registra solo mientras la app no está en reposo,
+    /// así en reposo la tecla sigue llegando a la app activa como siempre.
+    private func updateEscapeHotkey() {
+        if state == .idle {
+            if let r = escHotKeyRef { UnregisterEventHotKey(r); escHotKeyRef = nil }
+        } else if escHotKeyRef == nil {
+            RegisterEventHotKey(UInt32(kVK_Escape), 0, EventHotKeyID(signature: OSType(0x434C5644), id: 3), GetApplicationEventTarget(), 0, &escHotKeyRef)
+        }
+    }
+
     private func setupHotkey() {
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         InstallEventHandler(GetApplicationEventTarget(), { _, event, _ in
             var hk = EventHotKeyID()
             GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, MemoryLayout<EventHotKeyID>.size, nil, &hk)
-            DispatchQueue.main.async { hk.id == 2 ? controller.openInput() : controller.manualListen() }
+            DispatchQueue.main.async {
+                switch hk.id {
+                case 2: controller.openInput()
+                case 3: logApp("Esc: cancelar en estado \(controller.state)"); controller.cancelPressed()
+                default: controller.manualListen()
+                }
+            }
             return noErr
         }, 1, &spec, nil, nil)
         reregisterHotkeys()
