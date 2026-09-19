@@ -1161,32 +1161,40 @@ final class SettingsWindow: NSObject {
         return r
     }
 
-    /// Rejilla de dos columnas: etiquetas a la derecha, controles alineados a la izquierda.
-    /// Un elemento con un solo view ocupa las dos columnas (títulos de sección y notas).
-    private func grid(_ rows: [[NSView]]) -> NSGridView {
-        let g = NSGridView(numberOfColumns: 2, rows: 0)
-        g.rowSpacing = 9; g.columnSpacing = 12
-        g.rowAlignment = .firstBaseline
-        g.column(at: 0).xPlacement = .trailing
-        g.column(at: 0).width = 190
-        g.column(at: 1).xPlacement = .leading
+    /// Bloque de una pestaña: los títulos de sección y las notas (filas de un solo view) van alineados al borde
+    /// izquierdo; las filas etiqueta + control se agrupan en rejillas de dos columnas (etiqueta a la derecha en una
+    /// columna de ancho fijo, control a la izquierda), así todas las rejillas de la pestaña quedan alineadas entre sí.
+    private func grid(_ rows: [[NSView]]) -> NSView {
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        var pending: [[NSView]] = []
+        func flush() {
+            guard !pending.isEmpty else { return }
+            let g = NSGridView(views: pending)
+            g.rowSpacing = 9; g.columnSpacing = 12
+            g.rowAlignment = .firstBaseline
+            g.column(at: 0).xPlacement = .trailing
+            g.column(at: 0).width = 190
+            g.column(at: 1).xPlacement = .leading
+            stack.addArrangedSubview(g)
+            pending = []
+        }
         for r in rows {
             if r.count == 1 {
-                let row = g.addRow(with: [r[0]])
-                row.mergeCells(in: NSRange(location: 0, length: 2))
-                if let f = r[0] as? NSTextField, f.font?.fontDescriptor.symbolicTraits.contains(.bold) == true {
-                    row.topPadding = 10; row.bottomPadding = 2
-                    row.rowAlignment = .none
-                    f.alignment = .left
-                } else {
-                    row.rowAlignment = .none
-                    row.cell(at: 0).xPlacement = .leading
-                }
+                flush()
+                let v = r[0]
+                let isHeader = (v as? NSTextField)?.font?.fontDescriptor.symbolicTraits.contains(.bold) == true
+                if isHeader, let last = stack.arrangedSubviews.last { stack.setCustomSpacing(18, after: last) }
+                stack.addArrangedSubview(v)
+                if let f = v as? NSTextField { f.alignment = .left }
             } else {
-                g.addRow(with: r)
+                pending.append(r)
             }
         }
-        return g
+        flush()
+        return stack
     }
     private func section(_ t: String) -> NSTextField {
         let h = NSTextField(labelWithString: t)
