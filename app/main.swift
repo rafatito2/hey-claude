@@ -1937,6 +1937,7 @@ final class PersistentClaude {
         var failed = false
     }
     private var turn: Turn?
+    private var textEndedWithNewline = true   // para separar bloques de texto consecutivos
     private var generation = 0
     private(set) var lastFailureWasExit = false
     var isRunning: Bool { process?.isRunning ?? false }
@@ -2057,6 +2058,7 @@ final class PersistentClaude {
         }
         guard let stdin = stdinHandle else { completion(nil, true); return }
         turn = Turn(onStatus: onStatus, onText: onText, completion: completion)
+        textEndedWithNewline = true
         let msg: [String: Any] = ["type": "user", "message": ["role": "user", "content": [["type": "text", "text": text]]]]
         guard var data = try? JSONSerialization.data(withJSONObject: msg) else { completion(nil, true); return }
         data.append(10)
@@ -2077,10 +2079,15 @@ final class PersistentClaude {
 
     private func handle(_ obj: [String: Any]) {
         guard let type = obj["type"] as? String else { return }
-        if type == "stream_event", let ev = obj["event"] as? [String: Any],
+        if type == "stream_event", let ev = obj["event"] as? [String: Any], (ev["type"] as? String) == "content_block_start",
+           let block = ev["content_block"] as? [String: Any], (block["type"] as? String) == "text" {
+            // Texto nuevo tras una herramienta: salto de línea para que no se pegue a la frase anterior (ni a un HITO)
+            if !textEndedWithNewline { textEndedWithNewline = true; turn?.onText("\n") }
+        } else if type == "stream_event", let ev = obj["event"] as? [String: Any],
            (ev["type"] as? String) == "content_block_delta",
            let delta = ev["delta"] as? [String: Any], (delta["type"] as? String) == "text_delta",
            let t = delta["text"] as? String, !t.isEmpty {
+            textEndedWithNewline = t.hasSuffix("\n")
             turn?.onText(t)
         } else if type == "assistant", let msg = obj["message"] as? [String: Any],
                   let content = msg["content"] as? [[String: Any]] {
@@ -3074,7 +3081,9 @@ final class Controller: NSObject {
         var planText = ""
         let tiers = loadModelTiers()
         let normal = tiers["normal"] ?? "sonnet"
-        proc.send("Tarea: \(cmd)\n\nEscribe solo el PLAN (una línea \"PLAN: ...\" y los pasos numerados). No ejecutes nada todavía.", model: normal == "default" ? nil : normal,
+        let history = recentTaskHistory()
+        let historyBlock = history.isEmpty ? "" : "Tareas anteriores recientes, por si esta orden se refiere a alguna (\"vuelve a\", \"otra vez\", \"la misma\"...). El dictado deforma nombres propios: si un nombre de la orden se parece a uno de aquí, es ese.\n\(history)\n\n"
+        proc.send("Tarea: \(cmd)\n\n" + historyBlock + "Escribe solo el PLAN (una línea \"PLAN: ...\" y los pasos numerados). No ejecutes nada todavía.", model: normal == "default" ? nil : normal,
                   onStatus: { [weak self] l in t.lastToolLabel = l; self?.tasks.onChange?() },
                   onText: { [weak self] d in
                       planText += d

@@ -7,3 +7,4 @@ YouTube
 Spotify
 WhatsApp
 Gmail
+Hikaru

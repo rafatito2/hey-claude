@@ -7,7 +7,7 @@ Asistente de voz "hey claude" para macOS construido sobre Claude Code. Este arch
 | Ruta | Qué es |
 |---|---|
 | `~/Developer/Projects/hey-claude` (este repo) | Código fuente. Público en https://github.com/rafatito2/hey-claude |
-| `~/claude-voice/` | Carpeta de **datos** de la app en cada Mac. No se versiona. Contiene `ClaudeVoice.app` (compilada), `contexto.md` (memoria personal), `vocabulario.txt`, `modelos.txt`, `voice.log` (historial), `app.log` (eventos), `recordatorios.json`, `.session` / `.session_time`, `tareas/` (script de ajedrez y archivos de trabajo de tareas) y copias de `ask.sh` / `make_shortcut.py`. |
+| `~/claude-voice/` | Carpeta de **datos** de la app en cada Mac. No se versiona. Contiene `ClaudeVoice.app` (compilada), `contexto.md` (memoria personal), `vocabulario.txt`, `modelos.txt`, `voice.log` (historial), `app.log` (eventos), `recordatorios.json`, `.session` / `.session_time`, `tareas/` (script de ajedrez, `historial.txt` con las tareas terminadas y archivos de trabajo de tareas) y copias de `ask.sh` / `make_shortcut.py`. |
 | `app/main.swift` | Toda la app menos las tareas: audio, reconocimiento, voz, widget, ajustes, historial, controlador. ~3,000 líneas, un solo archivo a propósito (compila con `swiftc` sin Xcode project). |
 | `app/tasks.swift` | Tareas largas en segundo plano y panel de tareas. |
 | `app/build.sh` | Compila ambos archivos en `~/claude-voice/ClaudeVoice.app` con firma ad hoc. |
@@ -50,6 +50,7 @@ Commits: mensaje en español, sin líneas de atribución de Claude (regla global
 
 ## Tareas largas (tasks.swift)
 
+- Cada tarea terminada se anota en `~/claude-voice/tareas/historial.txt` (título → estado: resultado) y las últimas 5 viajan en la petición del plan, para que "vuelve a jugar contra Hikaru" tenga sentido en un proceso nuevo y para corregir nombres mal oídos.
 - Se detectan por `longTaskRegex` ("en segundo plano", "juega", "gana", "investiga a fondo"…). Flujo: `planTask` pide solo el plan a un proceso propio (`ownSession: true`) → se lee el resumen y se espera confirmación; cualquier respuesta que no sea un "no" claro arranca la tarea, y si trae una indicación se le pasa → `startTask`.
 - Protocolo de texto que el proceso debe seguir (en `taskPrompt`): `PLAN:` + pasos numerados, `PASO n:`, `HITO:`, `RESULTADO:`. `LongTask.ingest` lo parsea en streaming (separa marcadores pegados en una línea) y avanza los pasos también por parecido de texto. Si pasan 40 s sin hito, `TaskManager.tick` inyecta `ESTADO:` con `steer()`.
 - Mientras una tarea corre, una orden que suene a instrucción sobre ella (`steerRegex` o palabras del título) se inyecta en su proceso; una tarea nueva solo con "en segundo plano" u "otra tarea". Una orden normal que pasa de 40 s se promueve a tarea (`promoteToBackground`) y la conversación sigue en un proceso nuevo.
@@ -63,8 +64,9 @@ Commits: mensaje en español, sin líneas de atribución de Claude (regla global
 3. **No amplificar el micrófono por software**: distorsiona y produce palabras fantasma ("iCloud"). Subir el volumen de entrada del sistema sí ayuda.
 4. **Alternar la cancelación de eco reiniciando el motor tarda 4 s**: por eso se deja instalada y se usa `isVoiceProcessingBypassed`.
 5. **El sintetizador no avisa cuándo termina de generar** en esta Mac: por eso hay tres vías de fin de locución y un vigilante.
-6. **El reconocedor local reinicia el texto tras pausas y repite la última palabra**: de ahí `segmentPrefix`, `joinWithoutOverlap` y `stripReplyEcho`.
-7. **Claude Code cuesta arrancar 2-4 s**: por eso el proceso persistente y el precalentamiento al abrir la app.
+6. **Claude pega el texto de bloques consecutivos** ("...la partidaElijo la categoría..."): entre dos bloques de texto del mismo turno no hay salto de línea, así que `PersistentClaude` lo inserta; sin eso los HITO arrastran la narración siguiente.
+7. **El reconocedor local reinicia el texto tras pausas y repite la última palabra**: de ahí `segmentPrefix`, `joinWithoutOverlap` y `stripReplyEcho`.
+8. **Claude Code cuesta arrancar 2-4 s**: por eso el proceso persistente y el precalentamiento al abrir la app.
 
 ## Pendientes conocidos
 

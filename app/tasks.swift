@@ -150,6 +150,7 @@ final class TaskManager {
         t.process = nil
         onChange?()
         let body = message ?? (status == .done ? "Tarea terminada" : status.rawValue)
+        if t.runStartedAt != nil { appendTaskHistory(t, status: status, message: body) }
         notify(title: t.title, body: body)
         if let message { announce?(message) }
     }
@@ -194,6 +195,25 @@ final class TaskManager {
         content.sound = .default
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
     }
+}
+
+// MARK: - Historial
+
+/// Las tareas terminadas quedan anotadas para que una tarea nueva pueda referirse a ellas ("vuelve a jugar contra...").
+let taskHistoryFile = baseDir.appendingPathComponent("tareas/historial.txt")
+
+func appendTaskHistory(_ t: LongTask, status: LongTaskStatus, message: String) {
+    let outcome = (t.result?.isEmpty == false ? t.result! : message).replacingOccurrences(of: "\n", with: " ")
+    let line = "\(t.title.replacingOccurrences(of: "\n", with: " ")) → \(status.rawValue): \(outcome.prefix(240))"
+    try? FileManager.default.createDirectory(at: taskHistoryFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+    appendLine(taskHistoryFile, line)
+}
+
+/// Últimas tareas anotadas, una por línea (para el prompt del plan).
+func recentTaskHistory(limit: Int = 5) -> String {
+    guard let t = try? String(contentsOf: taskHistoryFile, encoding: .utf8) else { return "" }
+    let lines = t.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+    return lines.suffix(limit).map { "- " + $0 }.joined(separator: "\n")
 }
 
 // MARK: - Panel visual
