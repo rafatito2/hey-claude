@@ -2971,7 +2971,15 @@ final class PersistentClaude {
         } else if type == "result" {
             let reply = obj["result"] as? String
             let failed = (obj["is_error"] as? Bool) ?? false
-            if failed { lastFailureWasExit = false; logApp("Claude devolvió error: \((reply ?? "").prefix(200))") }
+            if failed {
+                let empty = (reply ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                // Error sin texto = casi siempre "No conversation found with session ID" (va por stderr): la sesión guardada
+                // ya no existe. Se descarta para que la siguiente orden (o el reintento) arranque una sesión nueva.
+                lastFailureWasExit = empty
+                if empty && !ownSession { clearSession(); logApp("Claude devolvió error vacío: descarto la sesión guardada") }
+                else { logApp("Claude devolvió error: \((reply ?? "").prefix(200))") }
+                if empty && turn == nil { stop() }
+            }
             if let t = turn { turn = nil; t.completion(reply, failed) }
         }
     }

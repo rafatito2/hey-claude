@@ -7,25 +7,25 @@ cmd="${1:-}"; shift || true
 case "$cmd" in
   notificaciones)
     /usr/bin/osascript <<'OSA'
+-- Cada notificación es: group 1 of UI element N of scroll area 1 of group 1 of window "Notification Center",
+-- con static texts: app o título, subtítulo (opcional) y cuerpo.
 tell application "System Events"
   if not (exists process "NotificationCenter") then return "Sin notificaciones."
   tell process "NotificationCenter"
     set out to {}
     repeat with w in windows
       try
-        repeat with el in (every UI element of w)
+        repeat with el in (every UI element of scroll area 1 of group 1 of w)
           try
-            set d to description of el
-            if d is not "" and d is not missing value then set end of out to d
+            set texts to value of every static text of group 1 of el
+            set AppleScript's text item delimiters to " · "
+            set t to texts as text
+            set AppleScript's text item delimiters to ""
+            if t is not "" then set end of out to t
           end try
         end repeat
       end try
     end repeat
-    if (count of out) = 0 then
-      try
-        set out to value of every static text of every group of every scroll area of every group of every window
-      end try
-    end if
     set AppleScript's text item delimiters to linefeed
     if (count of out) = 0 then return "Sin notificaciones a la vista."
     return out as text

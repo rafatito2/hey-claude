@@ -82,6 +82,7 @@ Commits: mensaje en español, sin líneas de atribución de Claude (regla global
 10. **Los avisos de `scheduleBuffer` llegan cuando el buffer termina**, no cuando empieza: con la voz neuronal (frase entera en un buffer) el resaltado arrancaba al final. Se programa una cabecera de 0.1 s con aviso y el resto detrás.
 11. **`NSGridView.removeRow` no quita las vistas de la jerarquía**: al refrescar la tabla por modelo de Uso hay que hacer `removeFromSuperview` a cada celda antes, o los textos se apilan.
 13. **Interrupción por volumen solo con palabras ajenas recientes**: un pico de nivel (puerta, tos) interrumpía a Claude; ahora el corte rápido exige que el reconocedor haya oído palabras que no son de la respuesta en los últimos 2 s, y sin eso hacen falta 1.5 s de ruido sostenido.
+14. **"No conversation found with session ID" llega solo por stderr** y como `result` de error sin texto antes de que el proceso termine: por eso un error vacío descarta la sesión guardada y se marca como "proceso muerto" para que el reintento arranque una sesión nueva; si no, la app decía "Hubo un error" para siempre.
 12. **La sesión retomada arrastra negativas viejas**: como el proceso arranca con `--resume`, si el modelo dijo antes "no puedo borrar eventos", lo repite aunque el prompt nuevo lo permita. Al cambiar permisos en el prompt, decir "nueva conversación" (o incluir en el prompt que lo anterior ya no aplica, como hace la regla de calendario).
 
 ## Pendientes conocidos
