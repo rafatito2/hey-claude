@@ -3200,6 +3200,7 @@ final class Controller: NSObject {
     let earcons = Earcons()
     let tasks = TaskManager()
     let tasksPanel = TasksPanel()
+    let suggestionsPanel = SuggestionsPanel()
     let routines = Routines()
     private var pendingTask: LongTask? = nil          // esperando tu "adelante"
     private var promoteWork: DispatchWorkItem? = nil  // pasa a segundo plano si tarda
@@ -3315,6 +3316,7 @@ final class Controller: NSObject {
         historyWindow.controller = self
         tasks.onChange = { [weak self] in self?.refreshTasksPanel() }
         claude.onTerminal = { [weak self] in self?.refreshTasksPanel() }
+        suggestionsPanel.onPick = { [weak self] s in self?.runSuggestion(s) }
         tasks.announce = { [weak self] text in self?.announce(text) }
         tasksPanel.onCancelId = { [weak self] id in
             guard let self, let t = self.tasks.tasks.first(where: { $0.id == id }) else { return }
@@ -3583,6 +3585,7 @@ final class Controller: NSObject {
     }
 
     private func commitFinal(_ cmdRaw: String) {
+        suggestionsPanel.hide()
         var cmd = fixTitleCase(cmdRaw)
         let corrected = applyCorrections(cmd)
         if corrected != cmd { logApp("Corrección de dictado: \"\(cmd)\" → \"\(corrected)\""); cmd = corrected }
@@ -3648,6 +3651,11 @@ final class Controller: NSObject {
             if typeIntoFrontApp(text) { speak(replyLang == "en" ? "Done." : "Listo.", thenIdle: false) }
             else { speak(replyLang == "en" ? "To type for you I need Accessibility access. I opened the request in System Settings." : "Para escribir por ti necesito el permiso de Accesibilidad. Te abrí la solicitud en Ajustes del Sistema.", thenIdle: false) }
             return
+        }
+        if matches(rx(#"^(que puedes hacer|que sabes hacer|que mas puedes hacer|en que (me )?puedes ayudar|que me recomiendas|dame (ideas|sugerencias)|sugerencias|sugiereme algo|ayuda|what can you do|what else can you do|give me ideas|suggestions|help me)\b"#), n) {
+            UsageStore.shared.countLocal()
+            logConv("> (local) \(cmd)")
+            showSuggestions(); return
         }
         if matches(rx(#"^(leeme|lee|dime|cuales son|que) (las |mis )?notificaciones|^(que notificaciones tengo|tengo notificaciones|read my notifications|what notifications do i have|any notifications)\b"#), n) {
             UsageStore.shared.countLocal()
@@ -4138,6 +4146,96 @@ final class Controller: NSObject {
         let msg = "Esta semana aprendí \(fresh.count) \(fresh.count == 1 ? "cosa" : "cosas") de ti: \(fresh.prefix(3).joined(separator: "; ")). Si algo no es así, dímelo o bórralo en Ajustes, Memoria."
         logConv("(memoria semanal) \(msg)")
         announce(msg)
+    }
+
+    // MARK: Sugerencias
+
+    /// Seis ideas para ahora mismo: hasta tres salen de tu contexto, tu uso, la hora y lo que tienes abierto; el resto, del repertorio.
+    private func buildSuggestions() -> [Suggestion] {
+        let en = replyLang == "en"
+        var personal: [Suggestion] = []
+        let facts = MemoryFile.facts().joined(separator: " ").lowercased()
+        let hour = Calendar.current.component(.hour, from: Date())
+        let apps = Set(NSWorkspace.shared.runningApplications.compactMap { $0.localizedName })
+        let history = ((try? String(contentsOf: logFile, encoding: .utf8)) ?? "").split(separator: "\n").suffix(400).map(String.init)
+        let recentOrders = history.filter { $0.contains("] > [") }.compactMap { l -> String? in
+            guard let r = l.range(of: "] ") else { return nil }
+            let body = String(l[r.upperBound...]).replacingOccurrences(of: #"^> \[[^\]]*\] "#, with: "", options: .regularExpression)
+            return body.count > 12 && body.count < 90 ? body : nil
+        }
+        // Lo que tienes entre manos
+        if let t = tasks.running.first(where: { $0.status == .running }) {
+            personal.append(Suggestion(icon: "hourglass", phrase: en ? "How is the task going?" : "¿Cómo va la tarea?", detail: t.title, personal: true))
+        }
+        if muted { personal.append(Suggestion(icon: "speaker.wave.2", phrase: en ? "Voice on" : "Con voz", detail: en ? "You have me muted" : "Me tienes en silencio", personal: true)) }
+        // La hora del día
+        if hour < 12 { personal.append(Suggestion(icon: "sun.horizon", phrase: en ? "What's on today?" : "¿Qué tengo hoy?", detail: en ? "Calendar and reminders for today" : "Tu agenda y recordatorios de hoy", personal: true)) }
+        else if hour >= 20 { personal.append(Suggestion(icon: "moon.stars", phrase: en ? "Summarize my day and tomorrow" : "Resume mi día y qué tengo mañana", detail: en ? "Mail, calendar and what we did" : "Correo, agenda y lo que hicimos", personal: true)) }
+        // Tu contexto
+        if facts.contains("canvas") || facts.contains("fau") { personal.append(Suggestion(icon: "graduationcap", phrase: en ? "Check my Canvas assignments" : "Revisa mis tareas de Canvas", detail: en ? "Opens FAU Canvas and reads what's due" : "Abre Canvas de FAU y lee qué tienes pendiente", personal: true)) }
+        if facts.contains("chess") || history.contains(where: { $0.lowercased().contains("chess") }) { personal.append(Suggestion(icon: "checkerboard.rectangle", phrase: en ? "Play against Hikaru and win" : "Juega contra el bot de Hikaru y gana", detail: en ? "Background task with Stockfish" : "Tarea en segundo plano con Stockfish", personal: true)) }
+        if facts.contains("israel") || facts.contains("hebreo") { personal.append(Suggestion(icon: "character.book.closed", phrase: en ? "Translate what I copied to Hebrew" : "Traduce lo que copié al hebreo", detail: en ? "Uses the clipboard" : "Usa el portapapeles", personal: true)) }
+        // Lo que tienes abierto
+        if apps.contains("Spotify") || apps.contains("Music") { personal.append(Suggestion(icon: "forward.fill", phrase: en ? "Next song" : "Siguiente canción", detail: en ? "Controls the music without the model" : "Controla la música sin pasar por el modelo", personal: true)) }
+        if apps.contains("Google Chrome") { personal.append(Suggestion(icon: "eye", phrase: en ? "What is this?" : "¿Qué es esto?", detail: en ? "Looks at the active window and explains it" : "Mira la ventana activa y te la explica", personal: true)) }
+        // Lo que más repites
+        var counts: [String: Int] = [:]
+        for o in recentOrders { counts[o.lowercased(), default: 0] += 1 }
+        if let top = counts.filter({ $0.value >= 2 }).max(by: { $0.value < $1.value })?.key, let orig = recentOrders.first(where: { $0.lowercased() == top }) {
+            personal.append(Suggestion(icon: "arrow.counterclockwise", phrase: orig, detail: en ? "You ask this often" : "Lo pides seguido", personal: true))
+        }
+        if routines.items.isEmpty { personal.append(Suggestion(icon: "clock.badge", phrase: en ? "Every morning at 8 tell me the weather and my agenda" : "Cada mañana a las 8 dime el clima y mi agenda", detail: en ? "Creates a routine that runs by itself" : "Crea una rutina que se ejecuta sola", personal: true)) }
+        let general: [Suggestion] = [
+            Suggestion(icon: "eye", phrase: en ? "What does this error say?" : "¿Qué dice este error?", detail: en ? "Reads the active window" : "Lee la ventana activa y te lo explica"),
+            Suggestion(icon: "message", phrase: en ? "Read my last message" : "Léeme el último mensaje", detail: en ? "From Messages, without the model" : "De Mensajes, al instante"),
+            Suggestion(icon: "bell.badge", phrase: en ? "What notifications do I have?" : "¿Qué notificaciones tengo?", detail: en ? "Reads Notification Center" : "Lee el Centro de notificaciones"),
+            Suggestion(icon: "magnifyingglass", phrase: en ? "In the background, research…" : "En segundo plano, investiga a fondo…", detail: en ? "Long task with milestones and a summary" : "Tarea larga con hitos y resumen al final"),
+            Suggestion(icon: "calendar.badge.minus", phrase: en ? "Find duplicate events in my calendar and delete them" : "Busca eventos duplicados en mi calendario y bórralos", detail: en ? "Apple Calendar, in seconds" : "Calendario de Apple, en segundos"),
+            Suggestion(icon: "clock.arrow.circlepath", phrase: en ? "What did you tell me yesterday about…" : "¿Qué me dijiste ayer sobre…?", detail: en ? "Searches our history" : "Busca en nuestro historial"),
+            Suggestion(icon: "xmark.app", phrase: en ? "Close everything except Chrome" : "Cierra todo menos Chrome", detail: en ? "Cleans up your desk" : "Despeja el escritorio de un golpe"),
+            Suggestion(icon: "lock", phrase: en ? "Lock the screen" : "Bloquea la pantalla", detail: en ? "Also: sleep, brightness, volume" : "También: dormir, brillo, volumen"),
+            Suggestion(icon: "brain", phrase: en ? "Remember that…" : "Recuerda que…", detail: en ? "Saves it to my memory of you" : "Lo guardo en lo que sé de ti"),
+            Suggestion(icon: "keyboard", phrase: en ? "Type this: …" : "Escribe esto: …", detail: en ? "Dictates into the active app" : "Dicta en la app activa"),
+            Suggestion(icon: "moon.zzz", phrase: en ? "Turn on do not disturb" : "Activa no molestar", detail: en ? "Focus mode via Shortcuts" : "Modo concentración por Atajos"),
+            Suggestion(icon: "doc.badge.plus", phrase: en ? "Create a file on the desktop with…" : "Crea en el escritorio un archivo con…", detail: en ? "Writes it for you" : "Lo escribe por ti"),
+            Suggestion(icon: "envelope", phrase: en ? "Summarize today's email" : "Resume mi correo de hoy", detail: en ? "Gmail, only what matters" : "Gmail, solo lo importante"),
+            Suggestion(icon: "text.bubble", phrase: en ? "Explain what I selected" : "Explícame lo que seleccioné", detail: en ? "Uses the selection in the active app" : "Usa el texto seleccionado en la app activa"),
+        ]
+        var seed = UInt64(Calendar.current.component(.day, from: Date()) * 24 + hour)
+        func next() -> UInt64 { seed = seed &* 6364136223846793005 &+ 1442695040888963407; return seed >> 33 }
+        let shuffled = general.sorted { _, _ in next() % 2 == 0 }
+        var out = Array(personal.prefix(3))
+        for g in shuffled where out.count < 6 && !out.contains(where: { $0.phrase == g.phrase }) { out.append(g) }
+        return out
+    }
+
+    private func showSuggestions() {
+        let list = buildSuggestions()
+        let en = replyLang == "en"
+        let spoken = list.prefix(3).map { $0.phrase.replacingOccurrences(of: "…", with: "") }.joined(separator: en ? ", or " : ", o ")
+        let msg = en ? "Lots of things. Right now you could say: \(spoken). There are more in the panel; tap one to try it." : "Muchas cosas. Ahora mismo podrías decir: \(spoken). En el panel tienes más; toca una para probarla."
+        logConv("< \(msg)")
+        suggestionsPanel.show(list, above: overlay.panel.frame)
+        speak(msg, thenIdle: false)
+    }
+
+    /// Tarjeta tocada: las frases con "…" abren la escucha con el texto ya puesto; las demás se ejecutan como si las dijeras.
+    private func runSuggestion(_ s: Suggestion) {
+        suggestionsPanel.hide()
+        if s.phrase.contains("…") {
+            let seed = s.phrase.replacingOccurrences(of: "…", with: "").replacingOccurrences(of: "?", with: "").replacingOccurrences(of: "¿", with: "").trimmingCharacters(in: .whitespaces)
+            if state == .speaking { interrupt(seed: seed) } else { if state != .listening { enterListening(followUp: true) }; segmentPrefix = seed + " "; commandText = seed; lastChange = Date(); overlay.set("Escuchando…", seed, .listening) }
+            return
+        }
+        logConv("> (sugerencia) \(s.phrase)")
+        if state == .speaking { speaker.stop(); speakWatchdog?.cancel(); speaker.onFinish = nil }
+        listener.stop()
+        state = .listening
+        typedReply = false
+        commandText = ""
+        overlay.set("Sugerencia", s.phrase, .listening)
+        overlay.show()
+        commit(s.phrase.replacingOccurrences(of: "?", with: "").replacingOccurrences(of: "¿", with: ""), refine: false)
     }
 
     /// Ejecuta una rutina programada como si la hubieras dicho: la respuesta se lee en voz alta.

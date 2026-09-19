@@ -548,3 +548,211 @@ Estás ejecutando una TAREA LARGA en segundo plano y el usuario no está mirando
 
 /// Herramientas ampliadas solo para tareas (el usuario las confirma al aprobar el plan).
 let taskExtraTools = "Bash(python3:*),Bash(node:*),Bash(npm:*),Bash(brew install:*),Bash(brew list:*),Bash(brew info:*),Bash(curl:*),Bash(git:*),Bash(chmod +x:*),Bash(pip3:*),Bash(stockfish:*),Bash(/opt/homebrew/bin/*),Bash(/usr/local/bin/*),Bash(which:*),Write(~/claude-voice/tareas/**),Edit(~/claude-voice/tareas/**),Bash(~/claude-voice/tareas/*),Bash(~/claude-voice/tareas/bestmove.sh:*),Bash(bash ~/claude-voice/tareas/*),Bash(python3 ~/claude-voice/tareas/*)"
+
+// MARK: - Panel de sugerencias ("¿qué puedes hacer?")
+
+struct Suggestion {
+    let icon: String       // SF Symbol
+    let phrase: String     // lo que se dice
+    let detail: String     // qué hace
+    var personal = false   // viene de tu contexto/uso
+}
+
+/// Panel flotante con tarjetas que entran escalonadas; tocar una la ejecuta.
+final class SuggestionsPanel: NSObject {
+    let panel: NSPanel
+    private let effect: NSVisualEffectView
+    private let stack = NSStackView()
+    private let closeButton = ClickButton(frame: .zero)
+    private let sparkle = NSImageView(frame: .zero)
+    private var sparkleTimer: Timer?
+    private var hideTimer: Timer?
+    private var cards: [NSView] = []
+    var onPick: ((Suggestion) -> Void)?
+    var isLight: Bool { UserDefaults.standard.bool(forKey: "lightTheme") }
+    private var fg: NSColor { isLight ? .black : .white }
+    private let width: CGFloat = 560
+
+    override init() {
+        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: width, height: 200), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.level = .statusBar
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.hidesOnDeactivate = false
+        panel.isMovableByWindowBackground = true
+        panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+        effect = NSVisualEffectView(frame: panel.contentView!.bounds)
+        effect.material = .hudWindow
+        effect.state = .active
+        effect.blendingMode = .behindWindow
+        effect.wantsLayer = true
+        effect.layer?.cornerRadius = 22
+        effect.layer?.masksToBounds = true
+        effect.maskImage = roundedMask(radius: 22)
+        effect.autoresizingMask = [.width, .height]
+        panel.contentView = effect
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 10
+        stack.edgeInsets = NSEdgeInsets(top: 16, left: 20, bottom: 18, right: 20)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        effect.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: effect.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: effect.trailingAnchor),
+        ])
+        closeButton.isBordered = false
+        closeButton.imagePosition = .imageOnly
+        if let img = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "Cerrar") {
+            closeButton.image = img.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 18, weight: .medium))
+        }
+        effect.addSubview(closeButton)
+        panel.alphaValue = 0
+        super.init()
+        closeButton.target = self
+        closeButton.action = #selector(closePressed)
+    }
+
+    @objc private func closePressed() { hide() }
+
+    private func card(_ s: Suggestion, index: Int) -> NSView {
+        let v = ClickButton(frame: .zero)
+        v.title = ""
+        v.isBordered = false
+        v.wantsLayer = true
+        v.layer?.cornerRadius = 14
+        v.layer?.backgroundColor = (isLight ? NSColor.black.withAlphaComponent(0.05) : NSColor.white.withAlphaComponent(0.08)).cgColor
+        v.layer?.borderWidth = s.personal ? 1 : 0.5
+        v.layer?.borderColor = (s.personal ? claudeOrange.withAlphaComponent(0.55) : fg.withAlphaComponent(0.12)).cgColor
+        v.translatesAutoresizingMaskIntoConstraints = false
+        v.widthAnchor.constraint(equalToConstant: (width - 40 - 10) / 2).isActive = true
+        v.heightAnchor.constraint(equalToConstant: 66).isActive = true
+        v.tag = index
+        v.target = self
+        v.action = #selector(cardPressed(_:))
+        v.toolTip = "Tocar para probarla"
+
+        let icon = NSImageView(frame: .zero)
+        if let img = NSImage(systemSymbolName: s.icon, accessibilityDescription: nil) {
+            icon.image = img.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 18, weight: .medium))
+        }
+        icon.contentTintColor = s.personal ? claudeOrange : fg.withAlphaComponent(0.8)
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        let circle = NSView(frame: .zero)
+        circle.wantsLayer = true
+        circle.layer?.cornerRadius = 17
+        circle.layer?.backgroundColor = (s.personal ? claudeOrange.withAlphaComponent(0.18) : fg.withAlphaComponent(0.08)).cgColor
+        circle.translatesAutoresizingMaskIntoConstraints = false
+        circle.addSubview(icon)
+
+        let phrase = NSTextField(labelWithString: "“\(s.phrase)”")
+        phrase.font = .systemFont(ofSize: 12.5, weight: .semibold)
+        phrase.textColor = fg
+        phrase.lineBreakMode = .byTruncatingTail
+        phrase.maximumNumberOfLines = 1
+        let detail = NSTextField(labelWithString: s.detail)
+        detail.font = .systemFont(ofSize: 11)
+        detail.textColor = fg.withAlphaComponent(0.6)
+        detail.lineBreakMode = .byTruncatingTail
+        detail.maximumNumberOfLines = 2
+        let texts = NSStackView(views: [phrase, detail])
+        texts.orientation = .vertical; texts.alignment = .leading; texts.spacing = 2
+        texts.translatesAutoresizingMaskIntoConstraints = false
+        v.addSubview(circle); v.addSubview(texts)
+        NSLayoutConstraint.activate([
+            circle.widthAnchor.constraint(equalToConstant: 34), circle.heightAnchor.constraint(equalToConstant: 34),
+            circle.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 12),
+            circle.centerYAnchor.constraint(equalTo: v.centerYAnchor),
+            icon.centerXAnchor.constraint(equalTo: circle.centerXAnchor), icon.centerYAnchor.constraint(equalTo: circle.centerYAnchor),
+            texts.leadingAnchor.constraint(equalTo: circle.trailingAnchor, constant: 10),
+            texts.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -10),
+            texts.centerYAnchor.constraint(equalTo: v.centerYAnchor),
+        ])
+        return v
+    }
+
+    private var current: [Suggestion] = []
+    @objc private func cardPressed(_ sender: NSButton) {
+        guard current.indices.contains(sender.tag) else { return }
+        let s = current[sender.tag]
+        NSAnimationContext.runAnimationGroup({ ctx in ctx.duration = 0.12; sender.animator().alphaValue = 0.4 }, completionHandler: {
+            NSAnimationContext.runAnimationGroup { ctx in ctx.duration = 0.2; sender.animator().alphaValue = 1 }
+        })
+        onPick?(s)
+    }
+
+    func show(_ suggestions: [Suggestion], above widgetFrame: NSRect) {
+        current = suggestions
+        effect.material = isLight ? .popover : .hudWindow
+        effect.appearance = NSAppearance(named: isLight ? .aqua : .darkAqua)
+        closeButton.contentTintColor = fg.withAlphaComponent(0.6)
+        stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        cards.removeAll()
+        let header = NSStackView()
+        header.orientation = .horizontal; header.spacing = 8; header.alignment = .centerY
+        if let img = NSImage(systemSymbolName: "sparkles", accessibilityDescription: nil) {
+            sparkle.image = img.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 16, weight: .semibold))
+        }
+        sparkle.contentTintColor = claudeOrange
+        header.addArrangedSubview(sparkle)
+        let title = NSTextField(labelWithString: "Prueba a decir…")
+        title.font = .systemFont(ofSize: 15, weight: .bold); title.textColor = fg
+        header.addArrangedSubview(title)
+        let hint = NSTextField(labelWithString: "las naranjas son para ti · toca una para probarla")
+        hint.font = .systemFont(ofSize: 11); hint.textColor = fg.withAlphaComponent(0.55)
+        header.addArrangedSubview(hint)
+        stack.addArrangedSubview(header)
+        var row: NSStackView? = nil
+        for (i, s) in suggestions.enumerated() {
+            if i % 2 == 0 { row = NSStackView(); row!.orientation = .horizontal; row!.spacing = 10; stack.addArrangedSubview(row!) }
+            let c = card(s, index: i)
+            c.alphaValue = 0
+            row!.addArrangedSubview(c)
+            cards.append(c)
+        }
+        stack.layoutSubtreeIfNeeded()
+        let h = max(120, stack.fittingSize.height)
+        panel.setFrame(NSRect(x: widgetFrame.maxX - width, y: widgetFrame.maxY + 12, width: width, height: h), display: true)
+        closeButton.frame = NSRect(x: width - 36, y: h - 34, width: 24, height: 24)
+        if !panel.isVisible { panel.orderFrontRegardless() }
+        NSAnimationContext.runAnimationGroup { ctx in ctx.duration = 0.25; panel.animator().alphaValue = 1 }
+        // Entrada escalonada: cada tarjeta sube y aparece
+        for (i, c) in cards.enumerated() {
+            c.layer?.transform = CATransform3DMakeTranslation(0, -14, 0)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08 + Double(i) * 0.07) {
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration = 0.38
+                    ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                    c.animator().alphaValue = 1
+                }
+                let anim = CABasicAnimation(keyPath: "transform.translation.y")
+                anim.fromValue = -14; anim.toValue = 0; anim.duration = 0.38
+                anim.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.3, 1.2)
+                c.layer?.add(anim, forKey: "in")
+                c.layer?.transform = CATransform3DIdentity
+            }
+        }
+        sparkleTimer?.invalidate()
+        sparkleTimer = Timer(timeInterval: 1.4, repeats: true) { [weak self] _ in
+            guard let self, self.panel.isVisible else { return }
+            let a = CABasicAnimation(keyPath: "transform.rotation.z")
+            a.fromValue = -0.25; a.toValue = 0.25; a.duration = 0.7; a.autoreverses = true
+            self.sparkle.layer?.add(a, forKey: "wiggle")
+        }
+        RunLoop.main.add(sparkleTimer!, forMode: .common)
+        hideTimer?.invalidate()
+        hideTimer = Timer(timeInterval: 45, repeats: false) { [weak self] _ in self?.hide() }
+        RunLoop.main.add(hideTimer!, forMode: .common)
+    }
+
+    func hide() {
+        guard panel.isVisible else { return }
+        sparkleTimer?.invalidate(); sparkleTimer = nil
+        hideTimer?.invalidate(); hideTimer = nil
+        NSAnimationContext.runAnimationGroup({ ctx in ctx.duration = 0.25; panel.animator().alphaValue = 0 }, completionHandler: { [panel] in
+            if panel.alphaValue == 0 { panel.orderOut(nil) }
+        })
+    }
+}
