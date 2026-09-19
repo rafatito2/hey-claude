@@ -2611,10 +2611,11 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
         let ns = text as NSString
         guard ns.length > 0 else { return [] }
         var out: [(String, Int)] = []
-        let sentences = rx(#"[^\n.!?…]+(?:[.!?…]+|$)\s*|[.!?…\n]+\s*"#).matches(in: text, range: NSRange(location: 0, length: ns.length))
+        // Frase = texto hasta el siguiente . ! ? … o salto de línea (una línea sin puntuación también es una frase)
+        let sentences = rx(#"[^\n.!?…]+[.!?…]*[ \t]*\n?|[.!?…]+[ \t]*\n?|\n"#).matches(in: text, range: NSRange(location: 0, length: ns.length))
         for m in sentences {
             let sentence = ns.substring(with: m.range)
-            guard !sentence.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            guard sentence.unicodeScalars.contains(where: { CharacterSet.alphanumerics.contains($0) }) else { continue }
             let base = m.range.location
             let sns = sentence as NSString
             var runs: [(String, Int, String)] = []
@@ -3446,7 +3447,9 @@ final class Controller: NSObject {
         switch state {
         case .idle:
             if let cmd = commandAfterWake(text) {
-                commandText = cmd
+                // Lo que sigue a "hey claude" puede ser la cola de la última respuesta (la voz de Claude entra por el mic)
+                segmentPrefix = ""
+                commandText = stripReplyEcho(cmd)
                 enterListening(followUp: false)
             }
         case .listening:
@@ -3478,7 +3481,7 @@ final class Controller: NSObject {
             }
             if followUp { fresh = stripReplyEcho(fresh) }
             if followUp, let afterWake = commandAfterWake(fresh) { fresh = afterWake }   // "hey claude" repetido a mitad de orden
-            if followUp { commandText = joinWithoutOverlap(segmentPrefix, fresh) } else if let cmd = commandAfterWake(text) { commandText = cmd }
+            if followUp { commandText = joinWithoutOverlap(segmentPrefix, fresh) } else if let cmd = commandAfterWake(text) { commandText = stripReplyEcho(cmd) }
             commandText = fixTitleCase(commandText)
             if debugText && commandText != before { logApp("orden parcial (seguimiento=\(followUp)): \"\(commandText)\"") }
             overlay.set("Escuchando…", commandText.isEmpty ? "Te escucho" : commandText, .listening)
