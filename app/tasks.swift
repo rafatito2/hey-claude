@@ -319,7 +319,19 @@ final class TasksPanel: NSObject {
     }
 
     /// Reconstruye el contenido con las tareas dadas.
+    /// Captura de la ventana de Chrome que la tarea está usando (la pone el controlador cada pocos segundos).
+    private let thumbView = NSImageView(frame: .zero)
+    var thumbnail: NSImage? {
+        didSet {
+            thumbView.image = thumbnail
+            let visible = thumbnail != nil
+            if thumbView.isHidden != !visible { thumbView.isHidden = !visible; if let last = lastRendered { render(last) } }
+        }
+    }
+    private var lastRendered: [LongTask]? = nil
+
     func render(_ tasks: [LongTask]) {
+        lastRendered = tasks
         applyTheme()
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         currentDots.removeAll()
@@ -393,6 +405,20 @@ final class TasksPanel: NSObject {
             }
             if let last = t.milestones.last, t.status == .running {
                 box.addArrangedSubview(label("Último hito: \(last)", size: 12, alpha: 0.75, lines: 2))
+            }
+            if t.status == .running, thumbnail != nil, thumbView.superview == nil {
+                thumbView.imageScaling = .scaleProportionallyUpOrDown
+                thumbView.wantsLayer = true
+                thumbView.layer?.cornerRadius = 8
+                thumbView.layer?.masksToBounds = true
+                thumbView.layer?.borderWidth = 0.5
+                thumbView.layer?.borderColor = fg.withAlphaComponent(0.2).cgColor
+                thumbView.toolTip = "Lo que Claude está viendo en Chrome"
+                thumbView.translatesAutoresizingMaskIntoConstraints = false
+                thumbView.widthAnchor.constraint(equalToConstant: width - 40).isActive = true
+                thumbView.heightAnchor.constraint(equalToConstant: (width - 40) * 0.6).isActive = true
+                thumbView.isHidden = false
+                box.addArrangedSubview(thumbView)
             }
             if let r = t.result, t.status != .running {
                 box.addArrangedSubview(label(r, size: 12, alpha: 0.85, lines: 3))

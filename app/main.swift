@@ -4,6 +4,7 @@
 
 import AppKit
 import AVFoundation
+import CoreAudio
 import Speech
 import Carbon
 import UserNotifications
@@ -109,6 +110,129 @@ func applyCorrections(_ s: String) -> String {
     return out
 }
 
+// MARK: - Memoria personal (contexto.md) revisable
+
+/// Lectura y edición de contexto.md como lista de hechos ("- …"). Las líneas nuevas llevan fecha al final para poder
+/// resumir lo aprendido cada semana; las antiguas sin fecha se muestran igual.
+enum MemoryFile {
+    static let dateTag = try! NSRegularExpression(pattern: #"\s*\((\d{4}-\d{2}-\d{2})\)\s*$"#)
+    static func lines() -> [String] {
+        ((try? String(contentsOf: contextFile, encoding: .utf8)) ?? "").split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+    }
+    static func facts() -> [String] {
+        lines().filter { $0.hasPrefix("- ") }.map { strip($0) }
+    }
+    static func strip(_ line: String) -> String {
+        let t = String(line.dropFirst(2))
+        return dateTag.stringByReplacingMatches(in: t, range: NSRange(location: 0, length: (t as NSString).length), withTemplate: "").trimmingCharacters(in: .whitespaces)
+    }
+    static func date(of line: String) -> String? {
+        guard let m = dateTag.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) else { return nil }
+        return (line as NSString).substring(with: m.range(at: 1))
+    }
+    static func append(_ fact: String) {
+        let line = "- \(fact) (\(UsageStore.key()))\n"
+        if let h = try? FileHandle(forWritingTo: contextFile) { h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); try? h.close() }
+        else { try? line.write(to: contextFile, atomically: true, encoding: .utf8) }
+    }
+    static func remove(lineIndex: Int) {
+        var ls = lines(); guard ls.indices.contains(lineIndex) else { return }
+        ls.remove(at: lineIndex)
+        try? ls.joined(separator: "\n").write(to: contextFile, atomically: true, encoding: .utf8)
+    }
+    static func newSince(days: Int) -> [String] {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
+        let from = Calendar.current.date(byAdding: .day, value: -days, to: Date())!
+        return lines().filter { $0.hasPrefix("- ") }.compactMap { l in
+            guard let d = date(of: l), let dd = f.date(from: d), dd >= from else { return nil }
+            return strip(l)
+        }
+    }
+}
+
+// MARK: - Rutinas por voz
+
+struct Routine: Codable {
+    var id: String
+    var text: String        // la orden que se ejecuta
+    var hour: Int
+    var minute: Int
+    var days: [Int]         // 1 = domingo … 7 = sábado; vacío = todos los días
+    var lastRun: String? = nil   // yyyy-MM-dd
+    var whenText: String {
+        let names = ["", "domingos", "lunes", "martes", "miércoles", "jueves", "viernes", "sábados"]
+        let d = days.isEmpty ? "todos los días" : days.count == 5 && !days.contains(1) && !days.contains(7) ? "entre semana" : days.count == 2 && days.contains(1) && days.contains(7) ? "los fines de semana" : "los " + days.sorted().map { names[$0] }.joined(separator: " y ")
+        return "\(d) a las \(hour):\(String(format: "%02d", minute))"
+    }
+}
+
+/// "Cada mañana a las 8 dime el clima y mi agenda": órdenes programadas que se ejecutan por voz cuando el asistente está libre.
+final class Routines {
+    static let file = baseDir.appendingPathComponent("rutinas.json")
+    private(set) var items: [Routine] = []
+    var canFire: (() -> Bool)?
+    var onFire: ((Routine) -> Void)?
+    private var timer: Timer?
+
+    init() {
+        if let d = try? Data(contentsOf: Routines.file), let list = try? JSONDecoder().decode([Routine].self, from: d) { items = list }
+        timer = Timer(timeInterval: 20, repeats: true) { [weak self] _ in self?.check() }
+        RunLoop.main.add(timer!, forMode: .common)
+    }
+    private func save() {
+        let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        if let d = try? enc.encode(items) { try? d.write(to: Routines.file, options: .atomic) }
+    }
+    func add(_ r: Routine) { items.append(r); save() }
+    func remove(id: String) { items.removeAll { $0.id == id }; save() }
+
+    /// Interpreta "cada mañana a las 8 y media dime el clima", "todos los lunes a las 9 revisa mi correo", "cada noche resume mi día".
+    static func parse(_ n: String, original: String) -> Routine? {
+        let ns = n as NSString
+        let pat = #"^(?:cada|todos los|todas las|every)\s+(dia|dias|manana|mananas|noche|noches|tarde|tardes|lunes|martes|miercoles|jueves|viernes|sabado|sabados|domingo|domingos|dia entre semana|dias entre semana|fin de semana|fines de semana|day|morning|evening|night|afternoon|weekday|weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:\s+(?:a las|a la|at)\s+(\d{1,2})(?::(\d{2}))?(\s+y media|\s+y cuarto|:30|\s*pm|\s*am|\s+de la (?:manana|tarde|noche))*)?[,]?\s+(.+)$"#
+        guard let m = rx(pat).firstMatch(in: n, range: NSRange(location: 0, length: ns.length)) else { return nil }
+        func g(_ i: Int) -> String { m.range(at: i).location == NSNotFound ? "" : ns.substring(with: m.range(at: i)) }
+        let period = g(1)
+        var hour = Int(g(2)) ?? -1, minute = Int(g(3)) ?? 0
+        let mods = g(4)
+        if mods.contains("y media") || mods.contains(":30") { minute = 30 }
+        if mods.contains("y cuarto") { minute = 15 }
+        if hour >= 0 && hour < 12 && (mods.contains("tarde") || mods.contains("noche") || mods.contains("pm")) { hour += 12 }
+        if hour < 0 {
+            hour = period.hasPrefix("noche") || period.hasPrefix("night") || period.hasPrefix("evening") ? 21 : period.hasPrefix("tarde") || period.hasPrefix("afternoon") ? 15 : 8
+        }
+        guard (0...23).contains(hour), (0...59).contains(minute) else { return nil }
+        let dayMap: [String: [Int]] = ["domingo": [1], "lunes": [2], "martes": [3], "miercoles": [4], "jueves": [5], "viernes": [6], "sabado": [7],
+                                       "sunday": [1], "monday": [2], "tuesday": [3], "wednesday": [4], "thursday": [5], "friday": [6], "saturday": [7],
+                                       "fin de semana": [1, 7], "weekend": [1, 7], "dia entre semana": [2, 3, 4, 5, 6], "weekday": [2, 3, 4, 5, 6]]
+        var days: [Int] = []
+        for (k, v) in dayMap where period.hasPrefix(k) { days = v }
+        // El texto de la orden con acentos si las longitudes coinciden
+        var text = g(5)
+        if (normalize(original) as NSString).length == ns.length { text = (original as NSString).substring(with: m.range(at: 5)) }
+        text = text.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+        guard text.split(separator: " ").count >= 2 else { return nil }
+        return Routine(id: UUID().uuidString, text: text, hour: hour, minute: minute, days: days)
+    }
+
+    private func check() {
+        guard !items.isEmpty, canFire?() ?? true else { return }
+        let now = Date(); let cal = Calendar.current
+        let today = UsageStore.key(now)
+        let h = cal.component(.hour, from: now), mi = cal.component(.minute, from: now), wd = cal.component(.weekday, from: now)
+        for (i, r) in items.enumerated() where r.lastRun != today {
+            guard r.days.isEmpty || r.days.contains(wd) else { continue }
+            let due = h * 60 + mi, target = r.hour * 60 + r.minute
+            // Ventana de 15 min por si el asistente estaba ocupado a la hora exacta
+            guard due >= target, due <= target + 15 else { continue }
+            items[i].lastRun = today
+            save()
+            onFire?(r)
+            return
+        }
+    }
+}
+
 // MARK: - Uso (tokens y costo)
 
 /// Contador persistente de tokens y costo por día y por modelo (~/claude-voice/uso.json).
@@ -122,7 +246,7 @@ final class UsageStore {
         mutating func add(_ o: Bucket) { turns += o.turns; input += o.input; output += o.output; cacheRead += o.cacheRead; cacheWrite += o.cacheWrite; cost += o.cost }
         var tokens: Int { input + output + cacheRead + cacheWrite }
     }
-    struct Day: Codable { var total = Bucket(); var models: [String: Bucket] = [:] }
+    struct Day: Codable { var total = Bucket(); var models: [String: Bucket] = [:]; var kinds: [String: Bucket] = [:]; var local = 0 }
     private(set) var days: [String: Day] = [:]
     var onChange: (() -> Void)?
 
@@ -132,16 +256,31 @@ final class UsageStore {
 
     static func key(_ date: Date = Date()) -> String { let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; return f.string(from: date) }
 
-    func add(model: String, _ b: Bucket) {
+    func add(model: String, kind: String = "Conversación", _ b: Bucket) {
         guard b.turns > 0 || b.tokens > 0 || b.cost > 0 else { return }
         let k = UsageStore.key()
         var day = days[k] ?? Day()
         day.total.add(b)
         var m = day.models[model] ?? Bucket(); m.add(b); day.models[model] = m
+        var kb = day.kinds[kind] ?? Bucket(); kb.add(b); day.kinds[kind] = kb
         days[k] = day
         save()
         DispatchQueue.main.async { self.onChange?() }
     }
+
+    /// Orden resuelta sin modelo (hora, volumen, recordatorio…): cuenta como gratis.
+    func countLocal() {
+        let k = UsageStore.key()
+        var day = days[k] ?? Day(); day.local += 1; days[k] = day
+        save()
+    }
+    var monthLocal: Int { let p = String(UsageStore.key().prefix(7)); return days.filter { $0.key.hasPrefix(p) }.reduce(0) { $0 + $1.value.local } }
+    var monthKinds: [String: Bucket] {
+        let p = String(UsageStore.key().prefix(7)); var out: [String: Bucket] = [:]
+        for (k, d) in days where k.hasPrefix(p) { for (kind, b) in d.kinds { var x = out[kind] ?? Bucket(); x.add(b); out[kind] = x } }
+        return out
+    }
+    static var alertUSD: Double { UserDefaults.standard.double(forKey: "usageAlertUSD") }
 
     func reset() { days = [:]; save(); onChange?() }
 
@@ -341,6 +480,9 @@ let screenRegex = try! NSRegularExpression(pattern: #"\b(pantalla|en mi pantalla
 let clipboardRegex = try! NSRegularExpression(pattern: #"\b(portapapeles|lo que copie|lo copiado|clipboard|what i copied)\b"#)
 let selectionRegex = try! NSRegularExpression(pattern: #"\b(lo seleccionado|el texto seleccionado|la seleccion|selected text|the selection|what i selected|what's selected)\b"#)
 let typeRegex = try! NSRegularExpression(pattern: #"^(escribe esto|escribe lo siguiente|teclea|dicta|type this|type the following|type)[:,]?\s+(.+)$"#)
+let eyesRegex = try! NSRegularExpression(pattern: #"^(que es esto|que es eso|que ves|que estas viendo|que estoy viendo|que dice (aqui|esto|ahi|eso)|explicame esto|explica esto|lee esto|leeme esto|que hay aqui|resume esto|traduce esto|what is this|what's this|what do you see|what does this say|explain this|read this|summarize this|translate this)\b"#)
+let regionRegex = try! NSRegularExpression(pattern: #"\b(esta zona|esta parte|esta area|una zona|la zona que|marco|marcar|te marco|selecciono|voy a seleccionar|this area|this part|this region|let me mark|i'll select)\b"#)
+let historyRegex = try! NSRegularExpression(pattern: #"^(?:que|dime que|recuerdas que|recuerdame que)?\s*(?:me dijiste|dijiste|me contaste|contaste|respondiste|me respondiste|hablamos|te pregunte|me recomendaste|me explicaste|what did you tell me|what did you say|what did we talk about|what did i ask)\b(?:.*?)\b(?:sobre|de|acerca de|about|regarding)\s+(.+)$"#)
 let muteOnRegex = try! NSRegularExpression(pattern: #"^(silencia(te)?( la voz)?|sin voz|mutea(te)?|mute( yourself)?|quita(te)? (el sonido|la voz)|no hables( mas)?|solo escribe|modo (silencio|silencioso|texto)|no voice|text only|stop talking)\b"#)
 let muteOffRegex = try! NSRegularExpression(pattern: #"^(con voz|activa (la )?voz|vuelve a hablar|habla de nuevo|quita el silencio|desmutea(te)?|unmute|voice on|talk again|speak again)\b"#)
 let stopRegex = try! NSRegularExpression(pattern: #"\b(para|stop|alto|callate|basta|silencio|espera|ya|wait|quiet|shut up|hold on|enough)\b"#)
@@ -570,6 +712,10 @@ final class LogoView: NSView {
     enum Mode { case idle, listening, thinking, speaking }
     var mode: Mode = .idle
     var level: CGFloat = 0
+    /// Tarea en curso: anillo de progreso (0…1) o anillo girando si aún no hay pasos; en espera de confirmación, anillo azul latiendo.
+    var taskProgress: Double? = nil { didSet { needsDisplay = true } }
+    var taskBusy = false { didSet { needsDisplay = true } }
+    var attention = false { didSet { needsDisplay = true } }
     private var phase: CGFloat = 0
     private var timer: Timer?
     private let image = NSImage(contentsOf: logoFile)
@@ -608,6 +754,35 @@ final class LogoView: NSView {
             drawStarburst(ctx, c, size)
         }
         ctx.restoreGState()
+        drawTaskRing(ctx, c, size)
+    }
+
+    /// Anillo alrededor del logo: progreso de la tarea, giro si no hay pasos, o azul latiendo si espera tu "sí".
+    private func drawTaskRing(_ ctx: CGContext, _ c: CGPoint, _ size: CGFloat) {
+        guard attention || taskBusy || taskProgress != nil else { return }
+        let r = size * 0.47
+        let width = max(2, size * 0.055)
+        ctx.setLineWidth(width)
+        ctx.setLineCap(.round)
+        let top = CGFloat.pi / 2
+        if attention {
+            let pulse = 0.55 + 0.45 * (0.5 + 0.5 * sin(phase * 1.6))
+            ctx.setStrokeColor(NSColor.systemBlue.withAlphaComponent(pulse).cgColor)
+            ctx.addArc(center: c, radius: r, startAngle: 0, endAngle: 2 * .pi, clockwise: false)
+            ctx.strokePath()
+            return
+        }
+        ctx.setStrokeColor(claudeOrange.withAlphaComponent(0.22).cgColor)
+        ctx.addArc(center: c, radius: r, startAngle: 0, endAngle: 2 * .pi, clockwise: false)
+        ctx.strokePath()
+        ctx.setStrokeColor(claudeOrange.cgColor)
+        if let p = taskProgress, p > 0 {
+            ctx.addArc(center: c, radius: r, startAngle: top, endAngle: top - CGFloat(min(1, p)) * 2 * .pi, clockwise: true)
+        } else {
+            let a = -phase * 1.5
+            ctx.addArc(center: c, radius: r, startAngle: a, endAngle: a - 0.9, clockwise: true)
+        }
+        ctx.strokePath()
     }
 
     private func drawStarburst(_ ctx: CGContext, _ c: CGPoint, _ size: CGFloat) {
@@ -1143,6 +1318,11 @@ final class SettingsWindow: NSObject {
     // Etiquetas de la pestaña Uso, por clave "fila.columna"
     private var usageLabels: [String: NSTextField] = [:]
     private let usageModels = NSGridView(numberOfColumns: 2, rows: 0)
+    private let usageKinds = NSGridView(numberOfColumns: 2, rows: 0)
+    private let usageAlertField = NSTextField(string: "")
+    private let memoryList = NSStackView()
+    private let routinesList = NSStackView()
+    private let memoryField = NSTextField(string: "")
     private var tabView: NSTabView?
 
     private func label(_ t: String) -> NSTextField {
@@ -1312,6 +1492,11 @@ final class SettingsWindow: NSObject {
         }
         for c in 1..<6 { usageGrid.column(at: c).xPlacement = .trailing }
         usageModels.rowSpacing = 4; usageModels.columnSpacing = 18
+        usageKinds.rowSpacing = 4; usageKinds.columnSpacing = 18
+        usageAlertField.placeholderString = "0 = sin aviso"
+        usageAlertField.widthAnchor.constraint(equalToConstant: 80).isActive = true
+        usageAlertField.target = self; usageAlertField.action = #selector(usageAlertChanged)
+        let alertRow = inline([label("Avisar si el mes pasa de:"), usageAlertField, { let l = NSTextField(labelWithString: "USD"); return l }()])
         let openUsage = NSButton(title: "Abrir uso.json", target: self, action: #selector(openUsageFile))
         let resetUsage = NSButton(title: "Reiniciar contadores…", target: self, action: #selector(resetUsage))
         let usageStack = NSStackView(views: [
@@ -1319,6 +1504,9 @@ final class SettingsWindow: NSObject {
             usageGrid,
             section("Por modelo, este mes"),
             usageModels,
+            section("Por tipo, este mes"),
+            usageKinds,
+            alertRow,
             inline([openUsage, resetUsage]),
             note("Cuenta cada orden, tarea y plan que pasa por Claude Code, incluidas las tareas en segundo plano. \"Caché\" es la parte del contexto reutilizada entre turnos (mucho más barata). El costo es el precio de lista de la API que reporta Claude Code; con una suscripción Pro o Max no se cobra aparte, sirve de referencia."),
         ])
@@ -1328,6 +1516,23 @@ final class SettingsWindow: NSObject {
         tv.addTabViewItem(tab("Voz", voiceGrid))
         tv.addTabViewItem(tab("Conversación", convGrid))
         tv.addTabViewItem(tab("Widget y atajos", widgetGrid))
+        memoryList.orientation = .vertical; memoryList.alignment = .leading; memoryList.spacing = 4
+        routinesList.orientation = .vertical; routinesList.alignment = .leading; routinesList.spacing = 4
+        memoryField.placeholderString = "Algo que deba recordar de ti…"
+        memoryField.widthAnchor.constraint(equalToConstant: 380).isActive = true
+        let addMemory = NSButton(title: "Guardar", target: self, action: #selector(addMemoryPressed))
+        let openCtx = NSButton(title: "Abrir contexto.md", target: self, action: #selector(openContextFile))
+        let memoryStack = NSStackView(views: [
+            section("Lo que sé de ti"),
+            note("Cada línea viene de un \"recuerda que…\" tuyo o de algo que Claude anotó por su cuenta. Se incluye en cada orden para que las respuestas tengan contexto. Borra lo que no sea cierto."),
+            memoryList,
+            inline([memoryField, addMemory, openCtx]),
+            section("Rutinas"),
+            note("Órdenes que se ejecutan solas por voz cuando el asistente está libre. Se crean hablando: \"cada mañana a las 8 dime el clima y mi agenda\", \"todos los lunes a las 9 revisa mi correo\"."),
+            routinesList,
+        ])
+        memoryStack.orientation = .vertical; memoryStack.alignment = .leading; memoryStack.spacing = 10
+        tv.addTabViewItem(tab("Memoria y rutinas", memoryStack))
         tv.addTabViewItem(tab("Uso", usageStack))
         tv.translatesAutoresizingMaskIntoConstraints = false
         let content = NSView(frame: NSRect(x: 0, y: 0, width: 640, height: 560))
@@ -1353,11 +1558,29 @@ final class SettingsWindow: NSObject {
             usageLabels["\(r).cost"]?.stringValue = UsageStore.money(b.cost)
         }
         // removeRow no saca las vistas de la jerarquía: hay que quitarlas antes o se apilan unas sobre otras
-        while usageModels.numberOfRows > 0 {
-            let r = usageModels.row(at: 0)
-            for c in 0..<usageModels.numberOfColumns { r.cell(at: c).contentView?.removeFromSuperview() }
-            usageModels.removeRow(at: 0)
+        for g in [usageModels, usageKinds] {
+            while g.numberOfRows > 0 {
+                let r = g.row(at: 0)
+                for c in 0..<g.numberOfColumns { r.cell(at: c).contentView?.removeFromSuperview() }
+                g.removeRow(at: 0)
+            }
         }
+        let kinds = u.monthKinds.sorted { $0.value.cost > $1.value.cost }
+        for (k, b) in kinds {
+            let name = NSTextField(labelWithString: k); name.font = .systemFont(ofSize: 12, weight: .medium)
+            let detail = NSTextField(labelWithString: "\(b.turns) turnos · \(UsageStore.tokens(b.tokens)) tokens · \(UsageStore.money(b.cost))")
+            detail.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular); detail.textColor = .secondaryLabelColor
+            usageKinds.addRow(with: [name, detail])
+        }
+        do {
+            let name = NSTextField(labelWithString: "Rutas locales"); name.font = .systemFont(ofSize: 12, weight: .medium)
+            let total = u.month.0.turns + u.monthLocal
+            let pct = total > 0 ? Int(Double(u.monthLocal) * 100 / Double(total)) : 0
+            let detail = NSTextField(labelWithString: "\(u.monthLocal) órdenes sin modelo (hora, volumen, recordatorios…) · \(pct)% del total · $0")
+            detail.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular); detail.textColor = .secondaryLabelColor
+            usageKinds.addRow(with: [name, detail])
+        }
+        usageAlertField.stringValue = UsageStore.alertUSD > 0 ? String(format: "%.0f", UsageStore.alertUSD) : ""
         let models = u.month.1.sorted { $0.value.cost > $1.value.cost }
         if models.isEmpty {
             usageModels.addRow(with: [note("Todavía no hay uso este mes.")])
@@ -1371,6 +1594,9 @@ final class SettingsWindow: NSObject {
         }
     }
 
+    @objc private func usageAlertChanged() {
+        UserDefaults.standard.set(Double(usageAlertField.stringValue.replacingOccurrences(of: ",", with: ".")) ?? 0, forKey: "usageAlertUSD")
+    }
     @objc private func openUsageFile() {
         if !FileManager.default.fileExists(atPath: UsageStore.file.path) { try? "{}".write(to: UsageStore.file, atomically: true, encoding: .utf8) }
         NSWorkspace.shared.open(UsageStore.file)
@@ -1427,7 +1653,48 @@ final class SettingsWindow: NSObject {
         for (k, p) in modelPopups { p.selectItem(at: idx[tiers[k] ?? "default"] ?? 3) }
         refreshNeural()
         refreshUsage()
+        refreshMemory()
     }
+
+    private func refreshMemory() {
+        for v in memoryList.arrangedSubviews + routinesList.arrangedSubviews { v.removeFromSuperview() }
+        let lines = MemoryFile.lines()
+        var any = false
+        for (i, l) in lines.enumerated() where l.hasPrefix("- ") {
+            any = true
+            let text = NSTextField(wrappingLabelWithString: MemoryFile.strip(l))
+            text.preferredMaxLayoutWidth = 420; text.font = .systemFont(ofSize: 12)
+            let when = NSTextField(labelWithString: MemoryFile.date(of: l).map { d -> String in
+                let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; let o = DateFormatter(); o.dateFormat = "d MMM"; o.locale = Locale(identifier: "es")
+                let fresh = f.date(from: d).map { Date().timeIntervalSince($0) < 7 * 86400 } ?? false
+                return (fresh ? "nuevo · " : "") + (f.date(from: d).map { o.string(from: $0) } ?? d)
+            } ?? "")
+            when.font = .systemFont(ofSize: 10); when.textColor = .secondaryLabelColor
+            when.widthAnchor.constraint(equalToConstant: 70).isActive = true
+            let del = NSButton(title: "Borrar", target: self, action: #selector(deleteMemory(_:)))
+            del.controlSize = .small; del.tag = i
+            let row = inline([del, when, text]); row.alignment = .firstBaseline
+            memoryList.addArrangedSubview(row)
+        }
+        if !any { memoryList.addArrangedSubview(note("Todavía no hay nada guardado.")) }
+        guard let c = controller else { return }
+        if c.routines.items.isEmpty { routinesList.addArrangedSubview(note("No hay rutinas.")) }
+        for r in c.routines.items {
+            let text = NSTextField(labelWithString: "\(r.whenText.prefix(1).capitalized + r.whenText.dropFirst()): \(r.text)")
+            text.font = .systemFont(ofSize: 12)
+            let del = NSButton(title: "Borrar", target: self, action: #selector(deleteRoutine(_:)))
+            del.controlSize = .small; del.identifier = NSUserInterfaceItemIdentifier(r.id)
+            routinesList.addArrangedSubview(inline([del, text]))
+        }
+    }
+    @objc private func deleteMemory(_ sender: NSButton) { MemoryFile.remove(lineIndex: sender.tag); refreshMemory() }
+    @objc private func deleteRoutine(_ sender: NSButton) { if let id = sender.identifier?.rawValue { controller?.routines.remove(id: id) }; refreshMemory() }
+    @objc private func addMemoryPressed() {
+        let t = memoryField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        MemoryFile.append(t); memoryField.stringValue = ""; refreshMemory()
+    }
+    @objc private func openContextFile() { NSWorkspace.shared.open(contextFile) }
 
     private func refreshNeural() {
         neuralCheck.state = NeuralVoice.enabled ? .on : .off
@@ -1683,14 +1950,50 @@ final class Listener {
     var engineRunning: Bool { engine.isRunning }
 
     /// Con la cancelación de eco activa el micrófono pierde sensibilidad; la dejamos puesta solo mientras Claude habla.
+    /// Con auriculares la voz de Claude no llega al micrófono: no hace falta cancelación de eco (que resta
+    /// sensibilidad) y se puede interrumpir hablando normal. Se recalcula al cambiar el dispositivo de salida.
+    private(set) var outputIsHeadphones = false
+    private var outputName = ""
+    func refreshOutputDevice() {
+        let (isPhones, name) = Listener.currentOutput()
+        if isPhones != outputIsHeadphones || name != outputName {
+            outputIsHeadphones = isPhones; outputName = name
+            logApp("Salida de audio: \(name)\(isPhones ? " (auriculares: sin cancelación de eco, interrupción sensible)" : "")")
+        }
+    }
+    static func currentOutput() -> (Bool, String) {
+        var dev = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &dev) == noErr, dev != 0 else { return (false, "?") }
+        var name: CFString = "" as CFString
+        size = UInt32(MemoryLayout<CFString>.size)
+        addr.mSelector = kAudioObjectPropertyName
+        _ = withUnsafeMutablePointer(to: &name) { AudioObjectGetPropertyData(dev, &addr, 0, nil, &size, $0) }
+        let n = name as String
+        let ln = n.lowercased()
+        var transport = UInt32(0); size = 4
+        addr.mSelector = kAudioDevicePropertyTransportType
+        if AudioObjectGetPropertyData(dev, &addr, 0, nil, &size, &transport) == noErr {
+            if transport == kAudioDeviceTransportTypeBluetooth || transport == kAudioDeviceTransportTypeBluetoothLE { return (true, n) }
+            if transport == kAudioDeviceTransportTypeUSB, ["head", "pods", "buds", "headset", "hyperx", "steelseries", "arctis", "logitech g"].contains(where: { ln.contains($0) }) { return (true, n) }
+        }
+        var source = UInt32(0); size = 4
+        addr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDataSource, mScope: kAudioObjectPropertyScopeOutput, mElement: kAudioObjectPropertyElementMain)
+        if AudioObjectGetPropertyData(dev, &addr, 0, nil, &size, &source) == noErr, source == 0x6864_706E { return (true, n + " (audífonos)") }   // 'hdpn'
+        return (ln.contains("headphone") || ln.contains("audifono") || ln.contains("auricular"), n)
+    }
+
     func setEchoActive(_ active: Bool) {
         guard engine.inputNode.isVoiceProcessingEnabled else { return }
-        if engine.inputNode.isVoiceProcessingBypassed != !active { engine.inputNode.isVoiceProcessingBypassed = !active }
+        let want = active && !outputIsHeadphones
+        if engine.inputNode.isVoiceProcessingBypassed != !want { engine.inputNode.isVoiceProcessingBypassed = !want }
     }
 
     /// Si cambia el dispositivo de audio (auriculares, AirPods), macOS detiene el motor: lo levantamos de nuevo.
     private func recoverEngine() {
         logApp("Cambió la configuración de audio; reinicio el motor")
+        refreshOutputDevice()
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
         engine.reset()
@@ -1705,6 +2008,7 @@ final class Listener {
     }
 
     func startEngine() throws {
+        refreshOutputDevice()
         do { try startEngine(echo: useEchoCancellation) }
         catch {
             logApp("Arranque con cancelación de eco falló (\(error.localizedDescription)); reintento sin ella")
@@ -2386,6 +2690,7 @@ final class PersistentClaude {
     private let tools: String
     private let extraPrompt: String
     private let ownSession: Bool
+    var kind: String { ownSession ? "Tareas" : "Conversación" }
     private var ownSid: String? = nil
     /// "low" / "medium" / "high": cuánto razona el modelo. Cambiarlo reinicia el proceso en la siguiente orden.
     var effort: String? = nil
@@ -2626,7 +2931,7 @@ final class PersistentClaude {
             usageSeen[m] = b
         }
         if usageSeen.isEmpty { usageSeen["_"] = UsageStore.Bucket() }
-        UsageStore.shared.add(model: UsageStore.modelName(model ?? "Claude"), d)
+        UsageStore.shared.add(model: UsageStore.modelName(model ?? "Claude"), kind: kind, d)
     }
 
     private func handle(_ obj: [String: Any]) {
@@ -2678,6 +2983,7 @@ final class Controller: NSObject {
     let earcons = Earcons()
     let tasks = TaskManager()
     let tasksPanel = TasksPanel()
+    let routines = Routines()
     private var pendingTask: LongTask? = nil          // esperando tu "adelante"
     private var promoteWork: DispatchWorkItem? = nil  // pasa a segundo plano si tarda
     private var announceQueue: [(Date, String)] = []
@@ -2697,6 +3003,19 @@ final class Controller: NSObject {
     private var silent: Bool { typedReply || muted }
     private var muteMenuItem: NSMenuItem?
     private var usageLine: NSMenuItem!
+    private func checkUsageAlert() {
+        let limit = UsageStore.alertUSD
+        guard limit > 0 else { return }
+        let month = String(UsageStore.key().prefix(7))
+        let cost = UsageStore.shared.month.0.cost
+        guard cost >= limit, UserDefaults.standard.string(forKey: "usageAlertedMonth") != month else { return }
+        UserDefaults.standard.set(month, forKey: "usageAlertedMonth")
+        let msg = "Este mes ya llevas \(UsageStore.money(cost)) de uso, por encima del aviso de \(UsageStore.money(limit))."
+        logConv("(uso) \(msg)")
+        let content = UNMutableNotificationContent(); content.title = "Uso de Claude Voice"; content.body = msg
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+        announce(msg)
+    }
     private func updateUsageLine() {
         let t = UsageStore.shared.today, m = UsageStore.shared.month.0
         usageLine?.title = "Uso hoy: \(UsageStore.tokens(t.tokens)) tokens · \(UsageStore.money(t.cost))   (mes: \(UsageStore.money(m.cost)))"
@@ -2794,6 +3113,8 @@ final class Controller: NSObject {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         reminders.canFire = { [weak self] in self?.state == .idle }
         reminders.onFire = { [weak self] r in self?.fireReminder(r) }
+        routines.canFire = { [weak self] in self?.state == .idle && (self?.tasks.running.isEmpty ?? true) }
+        routines.onFire = { [weak self] r in self?.fireRoutine(r) }
         listener.vocab = loadVocab()
         listener.onText = { [weak self] t, lang in self?.handleText(t, lang: lang) }
         listener.onAutoRestart = { [weak self] in
@@ -2982,6 +3303,7 @@ final class Controller: NSObject {
         case .idle:
             // Reinicia la transcripción de vez en cuando para que no se haga lenta
             if quiet > 4 && Date().timeIntervalSince(listener.lastRestart) > 120 { listener.restart() }
+            weeklyMemorySummaryIfDue()
         default:
             break
         }
@@ -3078,6 +3400,20 @@ final class Controller: NSObject {
             else { speak(replyLang == "en" ? "To type for you I need Accessibility access. I opened the request in System Settings." : "Para escribir por ti necesito el permiso de Accesibilidad. Te abrí la solicitud en Ajustes del Sistema.", thenIdle: false) }
             return
         }
+        if let answer = macControl(n, original: cmd) {
+            UsageStore.shared.countLocal()
+            logConv("> (local) \(cmd)")
+            logConv("< \(answer)")
+            speak(answer, thenIdle: false); return
+        }
+        if let m = historyRegex.firstMatch(in: n, range: NSRange(location: 0, length: (n as NSString).length)) {
+            let topic = (n as NSString).substring(with: m.range(at: 1)).trimmingCharacters(in: .whitespaces.union(.punctuationCharacters))
+            let answer = searchHistory(topic: topic, query: n)
+            UsageStore.shared.countLocal()
+            logConv("> (historial) \(cmd)")
+            logConv("< \(answer)")
+            speak(answer, thenIdle: false); return
+        }
         if matches(muteOnRegex, n) || matches(muteOffRegex, n) {
             let on = matches(muteOnRegex, n)
             logConv("> (local) \(cmd)")
@@ -3087,10 +3423,60 @@ final class Controller: NSObject {
             logConv("< \(msg)")
             speak(msg, thenIdle: true); return
         }
+        if matches(rx(#"^(que sabes de mi|que sabes sobre mi|que has aprendido de mi|que aprendiste de mi|que recuerdas de mi|que tienes en (tu )?memoria|what do you know about me|what have you learned about me|what do you remember about me)\b"#), n) {
+            UsageStore.shared.countLocal()
+            logConv("> (local) \(cmd)")
+            let facts = MemoryFile.facts()
+            let fresh = MemoryFile.newSince(days: 7)
+            var msg: String
+            if facts.isEmpty { msg = replyLang == "en" ? "Nothing yet. Tell me things with \"remember that\"." : "Todavía nada. Dime cosas con \"recuerda que\"." }
+            else {
+                msg = replyLang == "en" ? "I know \(facts.count) things about you." : "Sé \(facts.count) cosas de ti."
+                if !fresh.isEmpty { msg += replyLang == "en" ? " New this week: " : " Nuevas esta semana: "; msg += fresh.prefix(3).joined(separator: "; ") + "." }
+                else { msg += replyLang == "en" ? " The latest: " : " Las últimas: "; msg += facts.suffix(3).joined(separator: "; ") + "." }
+                msg += replyLang == "en" ? " You can review them in Settings, Memory." : " Puedes revisarlas en Ajustes, Memoria."
+            }
+            logConv("< \(msg)")
+            speak(msg, thenIdle: false); return
+        }
         if let instant = instantAnswer(n) {
+            UsageStore.shared.countLocal()
             logConv("> (local) \(cmd)")
             logConv("< \(instant)")
             speak(instant, thenIdle: false); return
+        }
+        if let r = Routines.parse(n, original: cmd) {
+            routines.add(r)
+            UsageStore.shared.countLocal()
+            logConv("(rutina) \(r.whenText): \(r.text)")
+            let msg = replyLang == "en" ? "Done. \(r.whenText), I'll do: \(r.text)." : "Listo. \(r.whenText.prefix(1).capitalized + r.whenText.dropFirst()), haré: \(r.text)."
+            logConv("< \(msg)")
+            speak(msg, thenIdle: false); return
+        }
+        if matches(rx(#"^(que rutinas tengo|mis rutinas|rutinas|lista(me)? las rutinas|what routines do i have|my routines)\b"#), n) {
+            UsageStore.shared.countLocal()
+            logConv("> (local) \(cmd)")
+            if routines.items.isEmpty { speak(replyLang == "en" ? "You have no routines. Say, for example: every morning at 8 tell me the weather." : "No tienes rutinas. Di por ejemplo: cada mañana a las 8 dime el clima.", thenIdle: false); return }
+            let list = routines.items.map { "\($0.whenText): \($0.text)" }.joined(separator: ". ")
+            let msg = (replyLang == "en" ? "You have \(routines.items.count): " : "Tienes \(routines.items.count): ") + list + "."
+            logConv("< \(msg)")
+            speak(msg, thenIdle: false); return
+        }
+        if let m = rx(#"^(borra|elimina|quita|cancela|delete|remove) (la |the )?rutina( de las (\d{1,2})| de (.+)| (.+))?$"#).firstMatch(in: n, range: NSRange(location: 0, length: (n as NSString).length)) {
+            UsageStore.shared.countLocal()
+            logConv("> (local) \(cmd)")
+            let hour = m.range(at: 4).location != NSNotFound ? Int((n as NSString).substring(with: m.range(at: 4))) : nil
+            let topic = [5, 6].compactMap { m.range(at: $0).location != NSNotFound ? (n as NSString).substring(with: m.range(at: $0)) : nil }.first
+            let victim = routines.items.first { r in
+                if let hour { return r.hour == hour || r.hour == hour + 12 }
+                if let topic { let w = normalize(topic).split(separator: " ").filter { $0.count > 3 }; return w.contains { normalize(r.text).contains($0) } }
+                return routines.items.count == 1
+            }
+            guard let victim else { speak(replyLang == "en" ? "I don't find that routine." : "No encuentro esa rutina.", thenIdle: false); return }
+            routines.remove(id: victim.id)
+            let msg = replyLang == "en" ? "Removed the routine: \(victim.text)." : "Quité la rutina: \(victim.text)."
+            logConv("< \(msg)")
+            speak(msg, thenIdle: false); return
         }
         if let (when, text0, spoken) = parseReminder(n) {
             // Recupera acentos del texto original si las longitudes coinciden
@@ -3100,6 +3486,7 @@ final class Controller: NSObject {
                 text = String(cmd[r])
             }
             reminders.add(text: text, at: when)
+            UsageStore.shared.countLocal()
             logConv("(recordatorio) \(text) -> \(when)")
             updateRemindersLine()
             speak(spoken, thenIdle: false); return
@@ -3107,10 +3494,10 @@ final class Controller: NSObject {
         if let m = memoryRegex.firstMatch(in: n, range: NSRange(location: 0, length: (n as NSString).length)) {
             let fact = (cmd as NSString).length == (n as NSString).length
                 ? (cmd as NSString).substring(with: m.range(at: 3)) : (n as NSString).substring(with: m.range(at: 3))
-            let line = "- " + fact.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters)) + "\n"
-            if let h = try? FileHandle(forWritingTo: contextFile) { h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); try? h.close() }
-            else { try? line.write(to: contextFile, atomically: true, encoding: .utf8) }
-            logConv("(memoria) \(line.trimmingCharacters(in: .whitespacesAndNewlines))")
+            let clean = fact.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+            MemoryFile.append(clean)
+            UsageStore.shared.countLocal()
+            logConv("(memoria) - \(clean)")
             speak(replyLang == "en" ? "Got it, I'll keep that in mind." : "Listo, lo tendré en cuenta.", thenIdle: false); return
         }
         if sessionIsStale() {
@@ -3119,9 +3506,12 @@ final class Controller: NSObject {
             logConv("--- nueva conversación (20 min sin actividad) ---")
         }
         // Permiso de pantalla: se comprueba antes de cambiar de estado
-        let wantsScreen = matches(screenRegex, n)
+        let screenMode: ScreenMode = matches(regionRegex, n) && (matches(eyesRegex, n) || matches(screenRegex, n)) ? .region
+            : matches(eyesRegex, n) ? .window : matches(screenRegex, n) ? .full : .none
+        let wantsScreen = screenMode != .none
         if wantsScreen && !CGPreflightScreenCaptureAccess() {
             CGRequestScreenCaptureAccess()
+            logConv("< (sin permiso de Grabación de pantalla; pedido en Ajustes del Sistema)")
             speak(replyLang == "en" ? "To see your screen I need Screen Recording permission. Enable Claude Voice in System Settings, Privacy and Security, Screen Recording, then restart the app." : "Para ver tu pantalla necesito el permiso de Grabación de pantalla. Activa Claude Voice en Ajustes del Sistema, Privacidad y seguridad, Grabación de pantalla, y reinicia la app.", thenIdle: true)
             return
         }
@@ -3153,7 +3543,25 @@ final class Controller: NSObject {
             self.runClaude(text, model: model, retry: true)
             logConv("> [\(modelName)] \(cmd)")
         }
-        gatherContext(cmdToSend, screen: wantsScreen, selection: wantsSelection, completion: sendNow)
+        if screenMode == .region {
+            overlay.set("Marca la zona…", cmd, .thinking)
+            speak(replyLang == "en" ? "Mark the area." : "Marca la zona.", thenIdle: false)
+            state = .thinking
+        }
+        gatherContext(cmdToSend, screen: screenMode, selection: wantsSelection, completion: sendNow)
+    }
+
+    enum ScreenMode { case none, full, window, region }
+
+    /// Ventana principal de la app activa (para "¿qué es esto?" sin capturar toda la pantalla).
+    private func frontWindowID() -> CGWindowID? {
+        guard let app = NSWorkspace.shared.frontmostApplication, app.bundleIdentifier != Bundle.main.bundleIdentifier else { return nil }
+        let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        for w in list where (w[kCGWindowOwnerPID as String] as? Int32) == app.processIdentifier && (w[kCGWindowLayer as String] as? Int) == 0 {
+            if let b = w[kCGWindowBounds as String] as? [String: CGFloat], (b["Width"] ?? 0) < 80 || (b["Height"] ?? 0) < 80 { continue }
+            return w[kCGWindowNumber as String] as? CGWindowID
+        }
+        return nil
     }
 
     private var currentModelName = ""
@@ -3352,10 +3760,11 @@ final class Controller: NSObject {
         guard state == .speaking else { loudSince = nil; return }
         let since = Date().timeIntervalSince(speakStart)
         if since < 1.2 { speakBaseline = max(speakBaseline, smoothLevel); return }
-        let threshold = max(0.16, speakBaseline * 1.5)
+        let phones = listener.outputIsHeadphones
+        let threshold = phones ? max(0.07, speakBaseline * 1.3) : max(0.16, speakBaseline * 1.5)
         if smoothLevel > threshold {
             if loudSince == nil { loudSince = Date() }
-            else if Date().timeIntervalSince(loudSince!) > 0.45 {
+            else if Date().timeIntervalSince(loudSince!) > (phones ? 0.3 : 0.45) {
                 logApp(String(format: "Interrumpido por volumen: nivel %.2f, base %.2f", smoothLevel, speakBaseline))
                 loudSince = nil
                 interrupt()
@@ -3430,6 +3839,36 @@ final class Controller: NSObject {
     }
 
     /// Orden escrita con ⌥⌘T: se procesa igual pero la respuesta solo se muestra, no se habla.
+    /// Una vez por semana, en reposo y en horario razonable, cuenta lo nuevo que aprendió de ti.
+    private var memorySummaryChecked = Date.distantPast
+    private func weeklyMemorySummaryIfDue() {
+        guard Date().timeIntervalSince(memorySummaryChecked) > 600 else { return }
+        memorySummaryChecked = Date()
+        let hour = Calendar.current.component(.hour, from: Date())
+        guard (9...21).contains(hour), tasks.running.isEmpty else { return }
+        let last = UserDefaults.standard.object(forKey: "memorySummaryAt") as? Date ?? Date.distantPast
+        guard Date().timeIntervalSince(last) > 7 * 86400 else { return }
+        let fresh = MemoryFile.newSince(days: 7)
+        UserDefaults.standard.set(Date(), forKey: "memorySummaryAt")
+        guard !fresh.isEmpty else { return }
+        let msg = "Esta semana aprendí \(fresh.count) \(fresh.count == 1 ? "cosa" : "cosas") de ti: \(fresh.prefix(3).joined(separator: "; ")). Si algo no es así, dímelo o bórralo en Ajustes, Memoria."
+        logConv("(memoria semanal) \(msg)")
+        announce(msg)
+    }
+
+    /// Ejecuta una rutina programada como si la hubieras dicho: la respuesta se lee en voz alta.
+    private func fireRoutine(_ r: Routine) {
+        logConv("> (rutina \(r.whenText)) \(r.text)")
+        listener.stop()
+        state = .listening
+        typedReply = false
+        commandText = ""
+        overlay.set("Rutina", r.text, .listening)
+        overlay.show()
+        media.pauseIfPlaying()
+        commit(r.text)
+    }
+
     func typedCommand(_ text: String) {
         if state == .speaking { interrupt() }
         if state == .thinking { claude.cancel(); processDone = true }
@@ -3472,7 +3911,7 @@ final class Controller: NSObject {
     }
 
     /// Captura de pantalla (en segundo plano) y selección (asíncrona) antes de enviar la orden.
-    private func gatherContext(_ cmd: String, screen: Bool, selection: Bool, completion: @escaping (String) -> Void) {
+    private func gatherContext(_ cmd: String, screen: ScreenMode, selection: Bool, completion: @escaping (String) -> Void) {
         var text = cmd
         let afterScreen: () -> Void = { [weak self] in
             guard let self else { return }
@@ -3485,22 +3924,26 @@ final class Controller: NSObject {
                 completion(text)
             }
         }
-        guard screen else { afterScreen(); return }
+        guard screen != .none else { afterScreen(); return }
         let shot = FileManager.default.temporaryDirectory.appendingPathComponent("hey-claude-pantalla-\(UUID().uuidString.prefix(8)).jpg")
         let target = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
         let rect: String? = target.map { f in
             "\(Int(f.frame.minX)),\(Int(NSScreen.screens[0].frame.maxY - f.frame.maxY)),\(Int(f.frame.width)),\(Int(f.frame.height))"
         }
+        let windowID = screen == .window ? frontWindowID() : nil
+        let what = screen == .region ? "la zona que marqué" : windowID != nil ? "la ventana activa" : "mi pantalla"
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var args = ["-x", "-t", "jpg"]
-            if let rect { args += ["-R", rect] }
+            if screen == .region { args.append("-i") }                 // el usuario arrastra para elegir la zona (Esc cancela)
+            else if let windowID { args += ["-o", "-l", "\(windowID)"] }   // solo la ventana activa, sin sombra
+            else if let rect { args += ["-R", rect] }
             args.append(shot.path)
             _ = shell("/usr/sbin/screencapture", args)
             DispatchQueue.main.async {
                 guard let self else { return }
                 if FileManager.default.fileExists(atPath: shot.path) {
-                    text += "\n\n[Adjunto una captura de mi pantalla en \(shot.path). Léela con la herramienta Read antes de responder.]"
-                    logApp("Captura de pantalla adjuntada")
+                    text += "\n\n[Adjunto una captura de \(what) en \(shot.path). Léela con la herramienta Read antes de responder; responde sobre lo que se ve.]"
+                    logApp("Captura adjuntada (\(what))")
                     self.screenshotToDelete = shot
                 }
                 afterScreen()
@@ -3574,6 +4017,166 @@ final class Controller: NSObject {
     }
 
     /// Respuestas que no necesitan modelo: hora, fecha, batería, recordatorios pendientes.
+    /// Control del Mac sin modelo: brillo, volumen, bloqueo, dormir, apps, música, auriculares, discos, no molestar.
+    private func macControl(_ n: String, original: String) -> String? {
+        let en = replyLang == "en"
+        func osa(_ src: String) -> String { shell("/usr/bin/osascript", ["-e", src]).trimmingCharacters(in: .whitespacesAndNewlines) }
+        func keyTimes(_ code: Int, _ times: Int) { _ = osa("tell application \"System Events\" to repeat \(times) times\nkey code \(code)\nend repeat") }
+        func num(_ s: String) -> Int? { rx(#"(\d+)"#).firstMatch(in: s, range: NSRange(location: 0, length: (s as NSString).length)).flatMap { Int((s as NSString).substring(with: $0.range(at: 1))) } }
+        // Brillo
+        if matches(rx(#"^(sube|aumenta|mas) (el )?brillo|^brillo (al maximo|mas alto|arriba)|^(brightness up|increase brightness|max brightness)"#), n) {
+            keyTimes(144, n.contains("maximo") || n.contains("max") ? 16 : 3); return en ? "Brighter." : "Más brillo."
+        }
+        if matches(rx(#"^(baja|reduce|menos) (el )?brillo|^brillo (al minimo|mas bajo|abajo)|^(brightness down|decrease brightness|min brightness)"#), n) {
+            keyTimes(145, n.contains("minimo") || n.contains("min") ? 16 : 3); return en ? "Dimmer." : "Menos brillo."
+        }
+        // Volumen del sistema
+        if let m = rx(#"^(pon (el )?volumen|volumen) (al|a|en) (\d+)"#).firstMatch(in: n, range: NSRange(location: 0, length: (n as NSString).length)) {
+            let v = min(100, Int((n as NSString).substring(with: m.range(at: 4))) ?? 50)
+            _ = osa("set volume output volume \(v)"); return en ? "Volume at \(v)." : "Volumen al \(v)."
+        }
+        if matches(rx(#"^(sube|aumenta|mas) (el )?volumen|^(volume up|louder|turn it up)"#), n) {
+            let cur = Int(osa("output volume of (get volume settings)")) ?? 50
+            _ = osa("set volume output volume \(min(100, cur + 15))"); return en ? "Louder." : "Más alto."
+        }
+        if matches(rx(#"^(baja|reduce|menos) (el )?volumen|^(volume down|quieter|turn it down)"#), n) {
+            let cur = Int(osa("output volume of (get volume settings)")) ?? 50
+            _ = osa("set volume output volume \(max(0, cur - 15))"); return en ? "Quieter." : "Más bajo."
+        }
+        if matches(rx(#"^(silencia|mutea|quita el sonido (de|a)) (la|el|mi) (mac|computadora|compu|bocinas|altavoces|sonido)|^(mute the mac|mute the computer|mute the speakers)"#), n) {
+            _ = osa("set volume with output muted"); return en ? "Muted." : "Silenciado."
+        }
+        if matches(rx(#"^(activa|pon|devuelve|regresa) el sonido( de la mac)?|^(quita el silencio|unmute the mac|unmute the computer|sound on)"#), n) {
+            _ = osa("set volume without output muted"); return en ? "Sound is back." : "Sonido activado."
+        }
+        // Pantalla y energía
+        if matches(rx(#"^(bloquea|bloquear|cierra sesion de|lock) (la )?(pantalla|mac|computadora|screen|computer)"#), n) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { _ = osa("tell application \"System Events\" to keystroke \"q\" using {command down, control down}") }   // ⌃⌘Q
+            return en ? "Locking." : "Bloqueo la pantalla."
+        }
+        if matches(rx(#"^(apaga|apagar) (la )?pantalla|^(screen off|turn off the screen|turn off the display)"#), n) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { _ = shell("/usr/bin/pmset", ["displaysleepnow"]) }
+            return en ? "Screen off." : "Apago la pantalla."
+        }
+        if matches(rx(#"^(pon a dormir|duerme|suspende) (la |el )?(mac|computadora|compu)|^(go to sleep|sleep the mac|put the mac to sleep)"#), n) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { _ = osa("tell application \"System Events\" to sleep") }
+            return en ? "Good night." : "Buenas noches."
+        }
+        // Apps: cerrar una, o todas menos algunas
+        if let m = rx(#"^(cierra|cerrar|quita|quit|close) (todas las apps|todas las aplicaciones|todo|all apps|everything)(?: (menos|excepto|salvo|except|but) (.+))?$"#).firstMatch(in: n, range: NSRange(location: 0, length: (n as NSString).length)) {
+            let keep = m.range(at: 4).location != NSNotFound ? (n as NSString).substring(with: m.range(at: 4)).split(whereSeparator: { $0 == "," || $0 == " " }).map { normalize(String($0)) }.filter { !["y", "and", "el", "la", "de"].contains($0) } : []
+            var closed: [String] = []
+            for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular && app != NSRunningApplication.current {
+                let name = app.localizedName ?? ""
+                let nn = normalize(name)
+                if nn == "finder" || keep.contains(where: { !$0.isEmpty && (nn.contains($0) || $0.contains(nn)) }) { continue }
+                if app.terminate() { closed.append(name) }
+            }
+            if closed.isEmpty { return en ? "Nothing to close." : "No había nada que cerrar." }
+            return en ? "Closed \(closed.count): \(closed.prefix(5).joined(separator: ", "))." : "Cerré \(closed.count): \(closed.prefix(5).joined(separator: ", "))."
+        }
+        if let m = rx(#"^(cierra|cerrar|quit|close) (la app |la aplicacion |the app )?(.+)$"#).firstMatch(in: n, range: NSRange(location: 0, length: (n as NSString).length)) {
+            var target = normalize((n as NSString).substring(with: m.range(at: 3))).trimmingCharacters(in: .punctuationCharacters)
+            target = target.replacingOccurrences(of: #"^(la|el|los|las|the|a|un|una)\s+"#, with: "", options: .regularExpression)
+            let aliases = ["calculadora": "calculator", "musica": "music", "notas": "notes", "mensajes": "messages", "correo": "mail", "fotos": "photos", "terminal": "terminal", "ajustes": "system settings", "calendario": "calendar", "recordatorios": "reminders", "vista previa": "preview", "navegador": "chrome"]
+            let wanted = aliases[target] ?? target
+            if let app = NSWorkspace.shared.runningApplications.first(where: { a in
+                guard a.activationPolicy == .regular, let ln = a.localizedName else { return false }
+                let nn = normalize(ln); return nn == wanted || nn.contains(wanted) || wanted.contains(nn) || nn == target
+            }), app.bundleIdentifier != Bundle.main.bundleIdentifier {
+                app.terminate(); return en ? "Closed \(app.localizedName ?? "it")." : "Cerré \(app.localizedName ?? "la app")."
+            }
+            return nil   // no es una app abierta: que lo interprete el modelo
+        }
+        // Música (Music o Spotify, la que esté corriendo)
+        if matches(rx(#"^(pausa|pausar|para|detén|deten) (la )?(musica|cancion|reproduccion)|^(pause the music|pause music|pause the song)"#), n) {
+            for app in ["Spotify", "Music"] where NSWorkspace.shared.runningApplications.contains(where: { $0.localizedName == app }) { _ = osa("tell application \"\(app)\" to pause") }
+            return en ? "Paused." : "Pausado."
+        }
+        if matches(rx(#"^(reanuda|continua|sigue|pon|reproduce) (la )?(musica|cancion|reproduccion)|^(play the music|resume the music|play music|resume music)"#), n) {
+            for app in ["Spotify", "Music"] where NSWorkspace.shared.runningApplications.contains(where: { $0.localizedName == app }) { _ = osa("tell application \"\(app)\" to play") }
+            return en ? "Playing." : "Sigue la música."
+        }
+        if matches(rx(#"^(siguiente|proxima|otra) (cancion|pista)|^(next song|next track|skip this song|skip)$"#), n) {
+            for app in ["Spotify", "Music"] where NSWorkspace.shared.runningApplications.contains(where: { $0.localizedName == app }) { _ = osa("tell application \"\(app)\" to next track") }
+            return en ? "Next." : "Siguiente."
+        }
+        if matches(rx(#"^(anterior|la de antes|regresa la) (cancion|pista)|^(previous song|previous track|go back a song)"#), n) {
+            for app in ["Spotify", "Music"] where NSWorkspace.shared.runningApplications.contains(where: { $0.localizedName == app }) { _ = osa("tell application \"\(app)\" to previous track") }
+            return en ? "Previous." : "Anterior."
+        }
+        // Auriculares Bluetooth (requiere blueutil: brew install blueutil)
+        if let m = rx(#"^(conecta|conectar|desconecta|desconectar|connect|disconnect) (los |mis |the |my )?(airpods|audifonos|auriculares|headphones|earbuds|bocina|altavoz|speaker)( .*)?$"#).firstMatch(in: n, range: NSRange(location: 0, length: (n as NSString).length)) {
+            let connect = n.hasPrefix("conecta") || n.hasPrefix("connect")
+            let bu = ["/opt/homebrew/bin/blueutil", "/usr/local/bin/blueutil"].first { FileManager.default.isExecutableFile(atPath: $0) }
+            guard let bu else { return en ? "To connect Bluetooth devices I need blueutil: brew install blueutil." : "Para conectar dispositivos Bluetooth necesito blueutil: brew install blueutil." }
+            let kind = (n as NSString).substring(with: m.range(at: 3))
+            let paired = shell(bu, ["--paired", "--format", "json"])
+            guard let data = paired.data(using: .utf8), let devs = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return en ? "I couldn't list your Bluetooth devices." : "No pude leer tus dispositivos Bluetooth." }
+            let wantPods = ["airpods", "audifonos", "auriculares", "headphones", "earbuds"].contains(kind)
+            let dev = devs.first { d in
+                let name = normalize(d["name"] as? String ?? "")
+                return wantPods ? (name.contains("airpods") || name.contains("pods") || name.contains("buds") || name.contains("headphone") || name.contains("wh-") || name.contains("beats")) : (name.contains("speaker") || name.contains("bocina") || name.contains("jbl") || name.contains("bose"))
+            }
+            guard let dev, let addr = dev["address"] as? String else { return en ? "I don't see paired headphones." : "No veo audífonos emparejados." }
+            _ = shell(bu, [connect ? "--connect" : "--disconnect", addr])
+            let name = dev["name"] as? String ?? "el dispositivo"
+            return connect ? (en ? "Connecting \(name)." : "Conectando \(name).") : (en ? "Disconnected \(name)." : "Desconecté \(name).")
+        }
+        // Discos externos
+        if matches(rx(#"^(expulsa|expulsar|desmonta|eject) (los |todos los |the )?(discos|disco|unidades|usb|drives|disks)"#), n) {
+            _ = osa("tell application \"Finder\" to eject (every disk whose ejectable is true)")
+            return en ? "Ejected." : "Discos expulsados."
+        }
+        // No molestar / concentración: usa un Atajo llamado "No molestar" (acción "Establecer modo de concentración")
+        if matches(rx(#"^(activa|pon|enciende|quita|desactiva|apaga) (el )?(modo )?(no molestar|concentracion|enfoque|focus)|^(do not disturb|focus mode) (on|off)|^(turn (on|off) (do not disturb|focus))"#), n) {
+            let off = matches(rx(#"\b(quita|desactiva|apaga|off)\b"#), n)
+            let list = shell("/usr/bin/shortcuts", ["list"])
+            let name = list.split(separator: "\n").map(String.init).first { normalize($0).contains("no molestar") || normalize($0).contains("concentracion") || normalize($0).contains("focus") }
+            guard let name else { return en ? "Create a Shortcut named \"No molestar\" with the action Set Focus, and I'll run it." : "Crea un Atajo llamado \"No molestar\" con la acción Establecer modo de concentración, y lo ejecuto por ti." }
+            _ = shell("/usr/bin/shortcuts", ["run", name, "-i", off ? "off" : "on"])
+            return off ? (en ? "Focus off." : "Modo concentración desactivado.") : (en ? "Focus on." : "Modo concentración activado.")
+        }
+        return nil
+    }
+
+    /// Busca en voice.log lo que se habló sobre un tema, acotado por "hoy", "ayer", "la semana pasada"...
+    private func searchHistory(topic: String, query: String) -> String {
+        let en = replyLang == "en"
+        guard let log = try? String(contentsOf: logFile, encoding: .utf8) else { return en ? "I have no history yet." : "Todavía no tengo historial." }
+        let cal = Calendar.current
+        var from = cal.date(byAdding: .day, value: -30, to: Date())!, to = Date()
+        var when = en ? "recently" : "últimamente"
+        if matches(rx(#"\b(hoy|today)\b"#), query) { from = cal.startOfDay(for: Date()); when = en ? "today" : "hoy" }
+        else if matches(rx(#"\b(ayer|yesterday)\b"#), query) { from = cal.startOfDay(for: cal.date(byAdding: .day, value: -1, to: Date())!); to = cal.startOfDay(for: Date()); when = en ? "yesterday" : "ayer" }
+        else if matches(rx(#"\b(antier|anteayer)\b"#), query) { from = cal.startOfDay(for: cal.date(byAdding: .day, value: -2, to: Date())!); to = cal.startOfDay(for: cal.date(byAdding: .day, value: -1, to: Date())!); when = "antier" }
+        else if matches(rx(#"\b(esta semana|this week)\b"#), query) { from = cal.date(byAdding: .day, value: -7, to: Date())!; when = en ? "this week" : "esta semana" }
+        else if matches(rx(#"\b(la semana pasada|last week)\b"#), query) { from = cal.date(byAdding: .day, value: -14, to: Date())!; to = cal.date(byAdding: .day, value: -7, to: Date())!; when = en ? "last week" : "la semana pasada" }
+        let words = normalize(topic).split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init).filter { $0.count > 2 && !["los", "las", "del", "que", "the", "con", "por", "para", "una", "uno"].contains($0) }
+        guard !words.isEmpty else { return en ? "About what?" : "¿Sobre qué?" }
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        var lastOrder = ""; var best: (Date, String, String, Int)? = nil
+        for raw in log.split(separator: "\n") {
+            let line = String(raw)
+            guard line.hasPrefix("["), (line as NSString).length > 21, let d = f.date(from: String(line.dropFirst().prefix(19))) else { continue }
+            let body = String(line.dropFirst(22))
+            if body.hasPrefix("> ") { lastOrder = body; continue }
+            guard d >= from, d <= to, body.hasPrefix("< ") else { continue }
+            let hay = normalize(body + " " + lastOrder)
+            let score = words.filter { hay.contains($0) }.count
+            if score > 0, best == nil || score >= best!.3 { best = (d, lastOrder, body, score) }
+        }
+        guard let (d, order, reply, _) = best else {
+            return en ? "I don't find anything about \(topic) \(when)." : "No encuentro nada sobre \(topic) \(when)."
+        }
+        let tf = DateFormatter(); tf.locale = Locale(identifier: en ? "en_US" : "es_MX")
+        tf.dateFormat = cal.isDateInToday(d) ? "h:mm a" : cal.isDateInYesterday(d) ? (en ? "'yesterday at' h:mm a" : "'ayer a las' h:mm a") : (en ? "EEEE 'at' h:mm a" : "'el' EEEE 'a las' h:mm a")
+        let cleanReply = reply.dropFirst(2).replacingOccurrences(of: #"^\((local|tarea|plan|segundo plano)\)\s*"#, with: "", options: .regularExpression)
+        let cleanOrder = order.dropFirst(2).replacingOccurrences(of: #"^\[[^\]]*\]\s*|^\([^)]*\)\s*"#, with: "", options: .regularExpression)
+        let excerpt = String(cleanReply.prefix(320))
+        return en ? "\(tf.string(from: d)) you asked \"\(cleanOrder.prefix(80))\" and I said: \(excerpt)" : "\(tf.string(from: d)) preguntaste \"\(cleanOrder.prefix(80))\" y te dije: \(excerpt)"
+    }
+
     private func instantAnswer(_ n: String) -> String? {
         let en = replyLang == "en"
         let loc = Locale(identifier: en ? "en_US" : "es_MX")
@@ -3773,7 +4376,63 @@ final class Controller: NSObject {
         }
     }
 
+    /// Anillo y burbuja del widget según la tarea en curso (o el plan que espera tu confirmación).
+    func updateWidgetTaskState() {
+        let running = tasks.running.filter { $0.status == .running }
+        if let d = pendingTask, d.status == .waiting {
+            overlay.logo.attention = true; overlay.logo.taskBusy = false; overlay.logo.taskProgress = nil
+            overlay.logo.toolTip = "Esperando tu confirmación: \(d.title)"
+        } else if let t = running.first {
+            overlay.logo.attention = false
+            let done = t.steps.filter { $0.state == .done }.count
+            let current = t.steps.contains { $0.state == .current } ? 0.5 : 0
+            overlay.logo.taskProgress = t.steps.isEmpty ? nil : (Double(done) + current) / Double(t.steps.count)
+            overlay.logo.taskBusy = t.steps.isEmpty
+            let step = t.steps.isEmpty ? "" : " · paso \(min(t.steps.count, done + 1)) de \(t.steps.count)"
+            overlay.logo.toolTip = "\(t.title)\(step)\n\(t.lastMilestone.isEmpty ? t.elapsedText : t.lastMilestone)"
+        } else {
+            overlay.logo.attention = false; overlay.logo.taskBusy = false; overlay.logo.taskProgress = nil
+            overlay.logo.toolTip = nil
+        }
+    }
+
+    /// Cada 3 s, mientras hay una tarea y el panel está a la vista, captura la ventana de Chrome para el panel.
+    private var thumbTimer: Timer?
+    private var thumbBusy = false
+    private func updateThumbnailTimer() {
+        let want = tasks.running.contains { $0.status == .running } && showTasksPanel && !panelDismissed && CGPreflightScreenCaptureAccess()
+        if want, thumbTimer == nil {
+            thumbTimer = Timer(timeInterval: 3, repeats: true) { [weak self] _ in self?.captureChromeThumbnail() }
+            RunLoop.main.add(thumbTimer!, forMode: .common)
+            captureChromeThumbnail()
+        } else if !want, let t = thumbTimer {
+            t.invalidate(); thumbTimer = nil
+            tasksPanel.thumbnail = nil
+        }
+    }
+    private func captureChromeThumbnail() {
+        guard !thumbBusy else { return }
+        let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        func area(_ w: [String: Any]) -> CGFloat {
+            let b = w[kCGWindowBounds as String] as? [String: CGFloat] ?? [:]
+            return (b["Width"] ?? 0) * (b["Height"] ?? 0)
+        }
+        let chrome = list.filter { ($0[kCGWindowOwnerName as String] as? String) == "Google Chrome" && ($0[kCGWindowLayer as String] as? Int) == 0 }
+        guard let win = chrome.max(by: { area($0) < area($1) }), let id = win[kCGWindowNumber as String] as? CGWindowID else { tasksPanel.thumbnail = nil; return }
+        thumbBusy = true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let img = CGWindowListCreateImage(.null, .optionIncludingWindow, id, [.boundsIgnoreFraming, .nominalResolution])
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.thumbBusy = false
+                if let img { self.tasksPanel.thumbnail = NSImage(cgImage: img, size: NSSize(width: img.width, height: img.height)) }
+            }
+        }
+    }
+
     func refreshTasksPanel() {
+        updateWidgetTaskState()
+        updateThumbnailTimer()
         let visible = tasks.tasks.filter { t in
             t.status == .running || t.status == .planning || t.status == .waiting || Date().timeIntervalSince(t.startedAt) < 15 * 60
         }
@@ -3945,7 +4604,7 @@ final class Controller: NSObject {
         usageLine.target = self
         menu.addItem(usageLine)
         updateUsageLine()
-        UsageStore.shared.onChange = { [weak self] in self?.updateUsageLine() }
+        UsageStore.shared.onChange = { [weak self] in self?.updateUsageLine(); self?.checkUsageAlert() }
         menu.addItem(.separator())
         let settingsItem = NSMenuItem(title: "Ajustes…", action: #selector(openSettings), keyEquivalent: ",")
         settingsItem.target = self

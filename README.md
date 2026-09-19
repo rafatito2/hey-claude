@@ -9,6 +9,13 @@ Todo corre en tu Mac con **tu propia cuenta de Claude**. No hay servidores inter
 ## Qué hace
 
 - **Voz neuronal local (opcional)**: Kokoro-82M (Apache 2.0) corriendo en tu Mac, mucho más natural que las voces de Apple y sin enviar nada fuera. Se instala una vez con `tts/setup_kokoro.sh` (o el botón "Instalar Kokoro…" en Ajustes; descarga PyTorch y el modelo, ~1 GB) y se activa en Ajustes → Voz neuronal. Voces en español e inglés a elegir; si el servidor no responde, la app vuelve sola a la voz de Apple.
+- **Manos libres para el Mac**, sin pasar por el modelo: "sube el brillo", "volumen al 30", "silencia la Mac", "bloquea la pantalla", "apaga la pantalla", "pon a dormir la Mac", "cierra Safari", "cierra todo menos Chrome", "pausa la música", "siguiente canción", "expulsa los discos", "conecta los AirPods" (con `blueutil`), "activa no molestar" (con un Atajo llamado "No molestar").
+- **Ojos**: "¿qué es esto?", "¿qué dice aquí?", "explícame esto" capturan la ventana activa y responden sobre lo que se ve; "esta zona" deja que marques un área con el mouse. "En mi pantalla…" captura la pantalla completa. Requiere permiso de Grabación de pantalla.
+- **Historial por voz**: "¿qué me dijiste ayer sobre las facturas?" busca en el historial y te lo lee, con la hora.
+- **Rutinas**: "cada mañana a las 8 dime el clima y mi agenda", "todos los lunes a las 9 revisa mi correo". Se ejecutan solas por voz cuando el asistente está libre. "¿Qué rutinas tengo?", "borra la rutina de las 8". También en Ajustes → Memoria y rutinas.
+- **Memoria revisable**: Ajustes → Memoria y rutinas lista todo lo que Claude sabe de ti, con fecha y botón de borrar; "¿qué sabes de mí?" lo resume por voz, y una vez por semana te cuenta lo nuevo que aprendió.
+- **Widget con estados**: anillo de progreso alrededor del logo mientras corre una tarea (paso n de m), anillo azul latiendo cuando espera tu "sí", y el último hito al pasar el mouse. El panel de tareas muestra una miniatura en vivo de la ventana de Chrome que Claude está usando.
+- **Auriculares**: con AirPods o audífonos se desactiva la cancelación de eco (que resta sensibilidad al micrófono) y se puede interrumpir a Claude hablando normal.
 - **Activación por voz** ("hey claude" u "oye claude"), por tecla (⌥⌘C), por clic en el widget o desde Siri con un Atajo. **Silenciar la voz**: botón 🔊 del widget, menú de la barra o diciendo "modo silencio" / "con voz"; Claude sigue escribiendo en el widget pero no habla (útil para no oír narrada toda una tarea). **Esc dos veces** seguidas cancela la orden en curso (mientras escucha, piensa o habla); un Esc solo no hace nada, por si era para otra app.
 - **Conversación continua**: tras cada respuesta sigue escuchando unos segundos; puedes interrumpirlo hablando encima, con el botón ■ del widget, o decir "para".
 - **Respuesta en streaming**: empieza a leer la primera frase mientras genera el resto, resaltando la palabra que va diciendo.
@@ -76,7 +83,7 @@ Después:
 | "cómo vas" / "cancela la tarea" | Estado o cancelación de la tarea |
 | "gracias, listo" | Cierra la conversación |
 
-Menú de la barra: escuchar ahora, escribir una orden, nueva conversación, uso de hoy (tokens y costo; clic para ver el detalle), historial, contexto, vocabulario, correcciones de dictado (`correcciones.txt`: "lo que oye => lo que quisiste decir", para deformaciones fijas como "chef.com => chess.com") y Ajustes, en pestañas: Voz (Apple y neuronal), Conversación (espera, sonido, modelos por nivel), Widget y atajos, y Uso (órdenes, tokens de entrada, salida y caché, y costo de hoy, del mes y total, por modelo; es el precio de lista que reporta Claude Code, con suscripción no se cobra aparte).
+Menú de la barra: escuchar ahora, escribir una orden, nueva conversación, uso de hoy (tokens y costo; clic para ver el detalle), historial, contexto, vocabulario, correcciones de dictado (`correcciones.txt`: "lo que oye => lo que quisiste decir", para deformaciones fijas como "chef.com => chess.com") y Ajustes, en pestañas: Voz (Apple y neuronal), Conversación (espera, sonido, modelos por nivel), Widget y atajos, Memoria y rutinas, y Uso (órdenes, tokens y costo de hoy, del mes y total; por modelo y por tipo, incluidas las rutas locales gratis; aviso opcional si el mes pasa de cierto costo; es el precio de lista que reporta Claude Code, con suscripción no se cobra aparte).
 
 ## Archivos
 
