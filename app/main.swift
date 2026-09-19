@@ -92,7 +92,9 @@ func loadCorrections() -> [(NSRegularExpression, String)] {
         let alts = line[..<sep.lowerBound].split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         guard !alts.isEmpty, !right.isEmpty else { continue }
         let body = alts.map { NSRegularExpression.escapedPattern(for: $0).replacingOccurrences(of: " ", with: "\\s+") }.joined(separator: "|")
-        if let r = try? NSRegularExpression(pattern: "(?<![\\p{L}\\p{N}])(?:\(body))(?![\\p{L}\\p{N}])", options: [.caseInsensitive]) {
+        // Un dominio ("chef.com") vale aunque venga pegado a la palabra anterior ("abraschef.com"); el resto, solo palabras completas
+        let left = alts.allSatisfy { $0.contains(".") } ? "" : "(?<![\\p{L}\\p{N}])"
+        if let r = try? NSRegularExpression(pattern: "\(left)(?:\(body))(?![\\p{L}\\p{N}])", options: [.caseInsensitive]) {
             out.append((r, right))
         }
     }
@@ -275,6 +277,8 @@ let screenRegex = try! NSRegularExpression(pattern: #"\b(pantalla|en mi pantalla
 let clipboardRegex = try! NSRegularExpression(pattern: #"\b(portapapeles|lo que copie|lo copiado|clipboard|what i copied)\b"#)
 let selectionRegex = try! NSRegularExpression(pattern: #"\b(lo seleccionado|el texto seleccionado|la seleccion|selected text|the selection|what i selected|what's selected)\b"#)
 let typeRegex = try! NSRegularExpression(pattern: #"^(escribe esto|escribe lo siguiente|teclea|dicta|type this|type the following|type)[:,]?\s+(.+)$"#)
+let muteOnRegex = try! NSRegularExpression(pattern: #"^(silencia(te)?( la voz)?|sin voz|mutea(te)?|mute( yourself)?|quita(te)? (el sonido|la voz)|no hables( mas)?|solo escribe|modo (silencio|silencioso|texto)|no voice|text only|stop talking)\b"#)
+let muteOffRegex = try! NSRegularExpression(pattern: #"^(con voz|activa (la )?voz|vuelve a hablar|habla de nuevo|quita el silencio|desmutea(te)?|unmute|voice on|talk again|speak again)\b"#)
 let stopRegex = try! NSRegularExpression(pattern: #"\b(para|stop|alto|callate|basta|silencio|espera|ya|wait|quiet|shut up|hold on|enough)\b"#)
 
 func matches(_ re: NSRegularExpression, _ s: String) -> Bool {
@@ -608,8 +612,10 @@ final class Overlay: NSObject {
     private var bodyText = ""
     private let stopButton = ClickButton(frame: .zero)
     private let pauseButton = ClickButton(frame: .zero)
+    private let muteButton = ClickButton(frame: .zero)
     var onStop: (() -> Void)?
     var onPause: (() -> Void)?
+    var onMute: (() -> Void)?
 
     override init() {
         let w: CGFloat = 520, h: CGFloat = 156
@@ -698,6 +704,12 @@ final class Overlay: NSObject {
         } else { pauseButton.title = "■" }
         effect.addSubview(pauseButton)
 
+        muteButton.frame = NSRect(x: w - 118, y: h - 46, width: 30, height: 30)
+        muteButton.isBordered = false
+        muteButton.bezelStyle = .regularSquare
+        muteButton.imagePosition = .imageOnly
+        effect.addSubview(muteButton)
+
         tapButton.isBordered = false
         tapButton.title = ""
         tapButton.isHidden = true
@@ -708,6 +720,9 @@ final class Overlay: NSObject {
         super.init()
         stopButton.target = self
         stopButton.action = #selector(stopPressed)
+        muteButton.target = self
+        muteButton.action = #selector(mutePressed)
+        setMuted(UserDefaults.standard.bool(forKey: "mutedVoice"))
         pauseButton.target = self
         pauseButton.action = #selector(pausePressed)
         tapButton.target = self
@@ -717,6 +732,17 @@ final class Overlay: NSObject {
     }
 
     @objc private func stopPressed() { onStop?() }
+    @objc private func mutePressed() { onMute?() }
+
+    /// Ícono del botón de silencio: altavoz normal o tachado.
+    func setMuted(_ muted: Bool) {
+        muteButton.toolTip = muted ? "Activar la voz" : "Silenciar la voz (sigue escribiendo)"
+        let name = muted ? "speaker.slash.circle.fill" : "speaker.wave.2.circle.fill"
+        if let img = NSImage(systemSymbolName: name, accessibilityDescription: muteButton.toolTip) {
+            muteButton.image = img.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 22, weight: .medium))
+        } else { muteButton.title = muted ? "🔇" : "🔊" }
+        muteButton.contentTintColor = muted ? NSColor.systemOrange.withAlphaComponent(0.9) : fg.withAlphaComponent(0.6)
+    }
     @objc private func pausePressed() { onPause?() }
 
     func showPause(_ show: Bool) { pauseButton.isHidden = !show || isCompact }
@@ -798,6 +824,7 @@ final class Overlay: NSObject {
         title.textColor = fg
         stopButton.contentTintColor = fg.withAlphaComponent(0.6)
         pauseButton.contentTintColor = fg.withAlphaComponent(0.6)
+        setMuted(UserDefaults.standard.bool(forKey: "mutedVoice"))
         render(spoken: lastSpoken, live: false)
     }
 
@@ -818,7 +845,7 @@ final class Overlay: NSObject {
         }, completionHandler: { [weak self] in
             guard let self, self.isCompact else { return }
             self.pauseButton.alphaValue = 1
-            self.title.isHidden = true; self.scroll.isHidden = true; self.stopButton.isHidden = true; self.pauseButton.isHidden = true
+            self.title.isHidden = true; self.scroll.isHidden = true; self.stopButton.isHidden = true; self.pauseButton.isHidden = true; self.muteButton.isHidden = true
             self.title.alphaValue = 1; self.scroll.alphaValue = 1; self.stopButton.alphaValue = 1
             self.effectView.layer?.cornerRadius = self.compactSize / 2
             self.effectView.maskImage = roundedMask(radius: self.compactSize / 2)
@@ -849,7 +876,7 @@ final class Overlay: NSObject {
         effectView.layer?.cornerRadius = 30
         effectView.maskImage = roundedMask(radius: 30)
         title.alphaValue = 0; scroll.alphaValue = 0; stopButton.alphaValue = 0
-        title.isHidden = false; scroll.isHidden = false; stopButton.isHidden = false
+        title.isHidden = false; scroll.isHidden = false; stopButton.isHidden = false; muteButton.isHidden = false
         programmaticMove = true
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.22
@@ -2198,7 +2225,11 @@ final class Controller: NSObject {
     let historyWindow = HistoryWindow()
     var followUpSeconds: Int { UserDefaults.standard.object(forKey: "followUpSeconds") as? Int ?? 5 }
     var sendSound: Bool { UserDefaults.standard.object(forKey: "sendSound") == nil ? true : UserDefaults.standard.bool(forKey: "sendSound") }
-    private var silent = false          // orden escrita: responde en pantalla, sin voz
+    private var typedReply = false      // orden escrita: responde en pantalla, sin voz
+    /// Voz silenciada por el usuario: Claude sigue escribiendo en el widget pero no habla. Persistente.
+    var muted: Bool { UserDefaults.standard.bool(forKey: "mutedVoice") }
+    private var silent: Bool { typedReply || muted }
+    private var muteMenuItem: NSMenuItem?
     private var remindersLine: NSMenuItem!
     private var listenMenuItem: NSMenuItem?
     private var typeMenuItem: NSMenuItem?
@@ -2284,6 +2315,7 @@ final class Controller: NSObject {
         tasksPanel.onClose = { [weak self] in self?.panelDismissed = true }
         tasksPanel.onClear = { [weak self] in self?.tasks.clearFinished() }
         overlay.onStop = { [weak self] in self?.cancelPressed() }
+        overlay.onMute = { [weak self] in self?.toggleMute(nil) }
         overlay.onPause = { [weak self] in self?.pausePressed() }
         overlay.onTap = { [weak self] in self?.manualListen() }
         listener.beforeStart = { [speaker, earcons] engine in speaker.attach(to: engine); earcons.attach(to: engine) }
@@ -2435,7 +2467,7 @@ final class Controller: NSObject {
         let sayFile = baseDir.appendingPathComponent(".say")
         if debugText, state == .idle, let t = try? String(contentsOf: sayFile, encoding: .utf8) {
             try? FileManager.default.removeItem(at: sayFile)
-            silent = false
+            typedReply = false
             state = .thinking
             streamText = ""; streamSpokenUpTo = 0; processDone = false
             overlay.show()
@@ -2488,7 +2520,7 @@ final class Controller: NSObject {
     private func enterListening(followUp: Bool) {
         listener.setEchoActive(false)
         overlay.showPause(false)
-        silent = false
+        typedReply = false
         state = .listening
         self.followUp = followUp
         segmentPrefix = ""
@@ -2574,6 +2606,15 @@ final class Controller: NSObject {
             else { speak(replyLang == "en" ? "To type for you I need Accessibility access. I opened the request in System Settings." : "Para escribir por ti necesito el permiso de Accesibilidad. Te abrí la solicitud en Ajustes del Sistema.", thenIdle: false) }
             return
         }
+        if matches(muteOnRegex, n) || matches(muteOffRegex, n) {
+            let on = matches(muteOnRegex, n)
+            logConv("> (local) \(cmd)")
+            setMuted(on)
+            let msg = on ? (replyLang == "en" ? "Okay, text only from now on." : "Listo, desde ahora solo escribo.")
+                         : (replyLang == "en" ? "Voice is back on." : "Listo, vuelvo a hablar.")
+            logConv("< \(msg)")
+            speak(msg, thenIdle: true); return
+        }
         if let instant = instantAnswer(n) {
             logConv("> (local) \(cmd)")
             logConv("< \(instant)")
@@ -2648,7 +2689,7 @@ final class Controller: NSObject {
     private func runClaude(_ cmd: String, model: String?, retry: Bool) {
         currentCmd = cmd.components(separatedBy: "\n\n[").first ?? cmd
         promoteWork?.cancel()
-        if !silent {
+        if !typedReply {
             let w = DispatchWorkItem { [weak self] in self?.promoteToBackground() }
             promoteWork = w
             DispatchQueue.main.asyncAfter(deadline: .now() + 40, execute: w)
@@ -2783,7 +2824,7 @@ final class Controller: NSObject {
             let delay = min(40, max(6, Double(words) / 2.5))
             overlayLastReply = streamText
             state = .idle
-            silent = false
+            typedReply = false
             listener.restart()
             setIcon("waveform.circle")
             statusLine.title = "Esperando \"hey claude\""
@@ -2884,7 +2925,7 @@ final class Controller: NSObject {
             }
         }
         state = .idle
-        silent = false
+        typedReply = false
         followUp = false
         commandText = ""
         listener.restart()
@@ -2904,7 +2945,7 @@ final class Controller: NSObject {
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: r.id, content: content, trigger: nil))
         earcons.reminder()
         logConv("(recordatorio disparado) \(r.text)")
-        silent = false
+        typedReply = false
         media.pauseIfPlaying()
         overlay.show()
         let en = textLanguage(r.text) == "en" || r.text == "Time's up"
@@ -2922,7 +2963,7 @@ final class Controller: NSObject {
         if state == .thinking { claude.cancel(); processDone = true }
         listener.stop()
         state = .listening
-        silent = true
+        typedReply = true
         commandText = ""
         overlay.set("Escribiste", text, .listening)
         overlay.show()
@@ -2932,7 +2973,7 @@ final class Controller: NSObject {
     @objc func testVoice() { testVoice(english: false) }
     func testVoice(english: Bool) {
         guard state == .idle else { return }
-        silent = false
+        typedReply = false
         overlay.show()
         speak(english ? "Hi, I'm Claude. This is how I sound in English." : "Hola, soy Claude. Así sueno con esta voz.", thenIdle: true)
     }
@@ -3213,7 +3254,7 @@ final class Controller: NSObject {
 
     /// Una orden normal que se alarga pasa a segundo plano y libera el asistente.
     private func promoteToBackground() {
-        guard state == .thinking, !processDone, !silent else { return }
+        guard state == .thinking, !processDone, !typedReply else { return }
         panelDismissed = false
         let t = LongTask(title: currentCmd, timeout: 30 * 60)
         t.status = .running
@@ -3275,6 +3316,24 @@ final class Controller: NSObject {
         refreshTasksPanel()
     }
     @objc func cancelAllTasks() { tasks.cancelAll() }
+
+    @objc func toggleMute(_ sender: Any?) { setMuted(!muted) }
+    /// Silencia o activa la voz. Al silenciar en mitad de una locución, la corta y deja el texto en pantalla.
+    func setMuted(_ m: Bool) {
+        UserDefaults.standard.set(m, forKey: "mutedVoice")
+        overlay.setMuted(m)
+        muteMenuItem?.state = m ? .on : .off
+        logApp(m ? "Voz silenciada (solo texto)" : "Voz activada")
+        if m && state == .speaking {
+            speaker.onFinish = nil
+            speakWatchdog?.cancel()
+            speaker.stop()
+            listener.setEchoActive(false)
+            overlay.showPause(false)
+            if processDone { finishSpeaking() }
+        }
+        if state == .idle { statusLine.title = m ? "Voz silenciada" : "Esperando \"hey claude\"" }
+    }
     @objc func clearFinishedTasks() { tasks.clearFinished() }
 
     /// Botón ■ del widget: corta a Claude (hablando o generando) y sigue escuchando.
@@ -3399,6 +3458,9 @@ final class Controller: NSObject {
         menu.addItem(.separator())
         let panelItem = NSMenuItem(title: "Mostrar panel de tareas", action: #selector(toggleTasksPanel(_:)), keyEquivalent: "")
         panelItem.target = self; panelItem.state = showTasksPanel ? .on : .off; menu.addItem(panelItem)
+        let muteItem = NSMenuItem(title: "Silenciar la voz (solo texto)", action: #selector(toggleMute(_:)), keyEquivalent: "")
+        muteItem.target = self; muteItem.state = muted ? .on : .off; menu.addItem(muteItem)
+        muteMenuItem = muteItem
         let cancelTasks = NSMenuItem(title: "Cancelar tareas en curso", action: #selector(cancelAllTasks), keyEquivalent: "")
         cancelTasks.target = self; menu.addItem(cancelTasks)
         let clearTasks = NSMenuItem(title: "Limpiar tareas terminadas", action: #selector(clearFinishedTasks), keyEquivalent: "")
