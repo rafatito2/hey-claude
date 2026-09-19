@@ -1051,6 +1051,11 @@ final class SettingsWindow: NSObject {
     private let voicePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let voiceENPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let rateSlider = NSSlider(value: 0.52, minValue: 0.40, maxValue: 0.66, target: nil, action: nil)
+    private let neuralCheck = NSButton(checkboxWithTitle: "Voz neuronal local (Kokoro): más natural, todo en tu Mac", target: nil, action: nil)
+    private let neuralESPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let neuralENPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let neuralStatus = NSTextField(labelWithString: "")
+    private let neuralInstall = NSButton(title: "Instalar Kokoro…", target: nil, action: nil)
     private let rateLabel = NSTextField(labelWithString: "")
     private let waitStepper = NSStepper(frame: .zero)
     private let waitLabel = NSTextField(labelWithString: "")
@@ -1111,6 +1116,15 @@ final class SettingsWindow: NSObject {
         themeCheck.target = self; themeCheck.action = #selector(themeChanged)
         indicatorCheck.target = self; indicatorCheck.action = #selector(indicatorChanged)
         soundCheck.target = self; soundCheck.action = #selector(soundChanged)
+        neuralCheck.target = self; neuralCheck.action = #selector(neuralChanged)
+        neuralESPopup.addItems(withTitles: NeuralVoice.voicesES.map { $0.1 }); neuralESPopup.target = self; neuralESPopup.action = #selector(neuralVoiceChanged(_:))
+        neuralENPopup.addItems(withTitles: NeuralVoice.voicesEN.map { $0.1 }); neuralENPopup.target = self; neuralENPopup.action = #selector(neuralVoiceChanged(_:))
+        neuralInstall.target = self; neuralInstall.action = #selector(installNeural)
+        neuralStatus.font = .systemFont(ofSize: 11); neuralStatus.textColor = .secondaryLabelColor
+        let neuralRow = NSStackView(views: [neuralInstall, neuralStatus]); neuralRow.spacing = 8
+        let neuralHint = NSTextField(wrappingLabelWithString: "Kokoro-82M (licencia Apache 2.0) corre en tu Mac y nada sale de ella. La instalación descarga PyTorch y el modelo (~1 GB) una sola vez. Si el servidor no responde, se usa la voz de Apple.")
+        neuralHint.font = .systemFont(ofSize: 11); neuralHint.textColor = .secondaryLabelColor
+        neuralHint.preferredMaxLayoutWidth = 500
 
         for p in [listenKeyPopup, typeKeyPopup] {
             p.addItems(withTitles: Controller.hotkeyPresets.map { $0.0 })
@@ -1135,6 +1149,12 @@ final class SettingsWindow: NSObject {
             row("Velocidad de lectura:", rateRow),
             row("", voiceButtons),
             hint,
+            header("Voz neuronal"),
+            row("", neuralCheck),
+            row("Voz neuronal en español:", neuralESPopup),
+            row("Voz neuronal en inglés:", neuralENPopup),
+            row("", neuralRow),
+            neuralHint,
             header("Conversación"),
             row("Espera tras responder:", waitRow),
             row("", soundCheck),
@@ -1209,6 +1229,41 @@ final class SettingsWindow: NSObject {
         let tiers = loadModelTiers()
         let idx = ["haiku": 0, "sonnet": 1, "opus": 2, "default": 3]
         for (k, p) in modelPopups { p.selectItem(at: idx[tiers[k] ?? "default"] ?? 3) }
+        refreshNeural()
+    }
+
+    private func refreshNeural() {
+        neuralCheck.state = NeuralVoice.enabled ? .on : .off
+        neuralCheck.isEnabled = NeuralVoice.installed
+        neuralESPopup.selectItem(at: NeuralVoice.voicesES.firstIndex { $0.0 == NeuralVoice.voiceES } ?? 0)
+        neuralENPopup.selectItem(at: NeuralVoice.voicesEN.firstIndex { $0.0 == NeuralVoice.voiceEN } ?? 0)
+        neuralInstall.title = NeuralVoice.installed ? "Reinstalar Kokoro…" : "Instalar Kokoro…"
+        neuralStatus.stringValue = "Estado: " + (controller?.speaker.neural.statusText ?? "")
+    }
+
+    @objc private func neuralChanged() {
+        NeuralVoice.enabled = neuralCheck.state == .on
+        if NeuralVoice.enabled { controller?.speaker.neural.start() } else { controller?.speaker.neural.stop() }
+        refreshNeural()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.refreshNeural() }
+    }
+    @objc private func neuralVoiceChanged(_ sender: NSPopUpButton) {
+        if sender === neuralESPopup {
+            UserDefaults.standard.set(NeuralVoice.voicesES[max(0, sender.indexOfSelectedItem)].0, forKey: "neuralVoiceES")
+            controller?.testVoice()
+        } else {
+            UserDefaults.standard.set(NeuralVoice.voicesEN[max(0, sender.indexOfSelectedItem)].0, forKey: "neuralVoiceEN")
+            controller?.testVoice(english: true)
+        }
+    }
+    @objc private func installNeural() {
+        // El instalador se copia a ~/claude-voice/tts con install.sh; corre en Terminal para que veas el progreso
+        guard FileManager.default.fileExists(atPath: NeuralVoice.setupScript.path) else {
+            neuralStatus.stringValue = "Falta \(NeuralVoice.setupScript.path): ejecuta install.sh del repo"
+            return
+        }
+        NSWorkspace.shared.open([NeuralVoice.setupScript], withApplicationAt: URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app"), configuration: NSWorkspace.OpenConfiguration())
+        neuralStatus.stringValue = "Instalando en Terminal… al terminar, activa la casilla"
     }
 
     private func rateText(_ r: Double) -> String {
@@ -1619,9 +1674,132 @@ final class Listener {
     }
 }
 
+// MARK: - Voz neuronal local (Kokoro)
+
+/// Arranca el servidor de ~/claude-voice/tts (Kokoro-82M, todo en la Mac) y pide el audio frase por frase.
+/// Si no está instalado, no responde o falla seguido, el Speaker usa la voz de Apple sin que se note.
+final class NeuralVoice {
+    static let dir = baseDir.appendingPathComponent("tts")
+    static let python = dir.appendingPathComponent("venv/bin/python")
+    static let script = dir.appendingPathComponent("kokoro_server.py")
+    static let setupScript = dir.appendingPathComponent("setup_kokoro.sh")
+    static var installed: Bool { FileManager.default.isExecutableFile(atPath: python.path) && FileManager.default.fileExists(atPath: script.path) }
+    static var enabled: Bool {
+        get { UserDefaults.standard.bool(forKey: "neuralVoice") }
+        set { UserDefaults.standard.set(newValue, forKey: "neuralVoice") }
+    }
+    static var voiceES: String { UserDefaults.standard.string(forKey: "neuralVoiceES") ?? "ef_dora" }
+    static var voiceEN: String { UserDefaults.standard.string(forKey: "neuralVoiceEN") ?? "af_heart" }
+    static let voicesES: [(String, String)] = [("ef_dora", "Dora (mujer)"), ("em_alex", "Alex (hombre)"), ("em_santa", "Santa (hombre)")]
+    static let voicesEN: [(String, String)] = [("af_heart", "Heart (mujer)"), ("af_bella", "Bella (mujer)"), ("af_nicole", "Nicole (mujer)"),
+                                               ("am_michael", "Michael (hombre)"), ("am_fenrir", "Fenrir (hombre)"), ("bf_emma", "Emma (británica)"), ("bm_george", "George (británico)")]
+    private let port = 8765
+    private var process: Process?
+    private(set) var ready = false
+    private var failures = 0
+    private(set) var sessionDisabled = false   // tras fallos seguidos, voz de Apple hasta reiniciar
+    private let session: URLSession = {
+        let c = URLSessionConfiguration.ephemeral
+        c.timeoutIntervalForRequest = 30
+        return URLSession(configuration: c)
+    }()
+    var statusText: String {
+        if !NeuralVoice.installed { return "No instalada" }
+        if !NeuralVoice.enabled { return "Desactivada" }
+        if sessionDisabled { return "Falló; usando la voz de Apple" }
+        return ready ? "Lista" : (process != nil ? "Arrancando…" : "Parada")
+    }
+
+    func start() {
+        guard NeuralVoice.enabled, NeuralVoice.installed else { return }
+        sessionDisabled = false; failures = 0
+        guard process == nil else { return }
+        let logURL = NeuralVoice.dir.appendingPathComponent("tts.log")
+        if !FileManager.default.fileExists(atPath: logURL.path) { FileManager.default.createFile(atPath: logURL.path, contents: nil) }
+        let logHandle = try? FileHandle(forWritingTo: logURL)
+        logHandle?.seekToEndOfFile()
+        let p = Process()
+        p.executableURL = NeuralVoice.python
+        p.arguments = [NeuralVoice.script.path, "--port", "\(port)"]
+        p.environment = ProcessInfo.processInfo.environment.merging(["PYTHONUNBUFFERED": "1", "VIRTUAL_ENV": NeuralVoice.dir.appendingPathComponent("venv").path]) { $1 }
+        p.standardOutput = logHandle; p.standardError = logHandle
+        p.terminationHandler = { [weak self] proc in
+            DispatchQueue.main.async {
+                guard let self, self.process === proc else { return }
+                self.process = nil; self.ready = false
+                logApp("El servidor de voz neuronal terminó (código \(proc.terminationStatus))")
+            }
+        }
+        do {
+            try p.run(); process = p
+            logApp("Servidor de voz neuronal arrancando (pid \(p.processIdentifier))")
+            pollHealth(attempt: 0)
+        } catch { logApp("No pude arrancar la voz neuronal: \(error.localizedDescription)") }
+    }
+
+    private func pollHealth(attempt: Int) {
+        guard process != nil, !ready, attempt < 120 else { return }
+        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/health")!)
+        req.timeoutInterval = 2
+        session.dataTask(with: req) { [weak self] data, resp, _ in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if (resp as? HTTPURLResponse)?.statusCode == 200, data.map({ String(decoding: $0, as: UTF8.self) }) == "ok" {
+                    self.ready = true
+                    logApp("Voz neuronal lista")
+                } else {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.pollHealth(attempt: attempt + 1) }
+                }
+            }
+        }.resume()
+    }
+
+    func stop() {
+        guard let p = process else { return }
+        process = nil; ready = false
+        p.terminate()
+        let pid = p.processIdentifier
+        DispatchQueue.global().asyncAfter(deadline: .now() + 3) { kill(pid, SIGKILL) }
+        logApp("Servidor de voz neuronal apagado")
+    }
+
+    /// Pide el audio de una frase. Devuelve en el hilo principal un buffer PCM (24 kHz mono) o nil si hay que usar Apple.
+    func synthesize(_ text: String, lang: String, speed: Double, completion: @escaping (AVAudioPCMBuffer?) -> Void) {
+        guard ready, !sessionDisabled else { completion(nil); return }
+        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/tts")!)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 4 + Double(text.count) * 0.04
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["text": text, "lang": lang, "voice": lang == "en" ? NeuralVoice.voiceEN : NeuralVoice.voiceES, "speed": speed])
+        let t0 = Date()
+        session.dataTask(with: req) { [weak self] data, resp, err in
+            DispatchQueue.main.async {
+                guard let self else { completion(nil); return }
+                let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                guard let data, code == 200, data.count >= 4 else {
+                    self.failures += 1
+                    logApp("Voz neuronal falló (\(err?.localizedDescription ?? "estado \(code)"))")
+                    if self.failures >= 3 { self.sessionDisabled = true; logApp("Voz neuronal desactivada hasta reiniciar; uso la voz de Apple") }
+                    completion(nil); return
+                }
+                self.failures = 0
+                let sr = Double((resp as? HTTPURLResponse)?.value(forHTTPHeaderField: "X-Sample-Rate") ?? "") ?? 24000
+                guard let fmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sr, channels: 1, interleaved: false) else { completion(nil); return }
+                let frames = AVAudioFrameCount(data.count / 4)
+                guard let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: frames), let dst = buf.floatChannelData?[0] else { completion(nil); return }
+                buf.frameLength = frames
+                data.withUnsafeBytes { raw in if let base = raw.baseAddress { memcpy(dst, base, Int(frames) * 4) } }
+                if debugText { logApp(String(format: "voz neuronal: %.1f s de audio en %.2f s", Double(frames) / sr, Date().timeIntervalSince(t0))) }
+                completion(buf)
+            }
+        }.resume()
+    }
+}
+
 // MARK: - Voz
 
 final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
+    let neural = NeuralVoice()
     private let synth = AVSpeechSynthesizer()
     private(set) var voice: AVSpeechSynthesisVoice?
     private(set) var voiceEN: AVSpeechSynthesisVoice? = Speaker.defaultEnglishVoice()
@@ -1787,6 +1965,35 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
         writing = true
         let utt = Utt(text: text, offset: offset, gen: generation)
         current = utt
+        if NeuralVoice.enabled && neural.ready && !neural.sessionDisabled { writeNeural(utt) } else { writeApple(utt) }
+    }
+
+    /// Voz neuronal: el audio de la frase llega entero; se programa y se cierra la escritura.
+    /// La siguiente frase se genera mientras suena esta, así que no hay pausas entre frases.
+    private func writeNeural(_ utt: Utt) {
+        let lang = textLanguage(utt.text) == "en" ? "en" : "es"
+        let speed = min(1.5, max(0.7, Double(rate) / 0.52))
+        neural.synthesize(utt.text, lang: lang, speed: speed) { [weak self] buf in
+            guard let self, utt.gen == self.generation, !utt.written else { return }
+            guard let buf, let out = self.convert(buf), out.frameLength > 0 else {
+                logApp("Voz neuronal sin audio para la frase; uso la voz de Apple")
+                self.writeApple(utt); return
+            }
+            utt.frames = out.frameLength
+            utt.first = false
+            self.player.scheduleBuffer(out, completionCallbackType: .dataRendered) { [weak self] _ in
+                DispatchQueue.main.async {
+                    guard let self, utt.gen == self.generation else { return }
+                    utt.renderStart = Date()
+                    self.armIfReady(utt)
+                }
+            }
+            self.finishWrite(utt)
+        }
+    }
+
+    private func writeApple(_ utt: Utt) {
+        let text = utt.text
         let u = AVSpeechUtterance(string: text)
         u.voice = textLanguage(text) == "en" ? (voiceEN ?? voice) : voice
         u.rate = rate
@@ -2352,6 +2559,7 @@ final class Controller: NSObject {
         statusLine.title = "Esperando \"hey claude\""
         updateRemindersLine()
         logApp("Claude Voice listo")
+        speaker.neural.start()
         let tiers = loadModelTiers()
         let normal = tiers["normal"] ?? "sonnet"
         claude.prewarm(model: normal == "default" ? nil : normal)
@@ -3419,6 +3627,7 @@ final class Controller: NSObject {
 
     /// Apaga el proceso de conversación y los de todas las tareas.
     func shutdownProcesses() {
+        speaker.neural.stop()
         claude.stop()
         for t in tasks.running { t.process?.cancel() }
     }
