@@ -2583,10 +2583,55 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
             DispatchQueue.main.async { [weak self] in self?.onFinish?() }
             return
         }
-        pending.append((text, offset))
-        queued += 1
+        for (part, off) in Speaker.languageRuns(text) {
+            pending.append((Speaker.pronounceable(part), offset + off))
+            queued += 1
+        }
         if !player.isPlaying { player.play() }
         writeNext()
+    }
+
+    /// Un tramo en hebreo, árabe, cirílico, etc. no se puede leer con voces de español o inglés (Kokoro generaba minutos
+    /// de ruido): se anuncia el alfabeto en vez de sintetizarlo. El texto original sigue visible en el widget.
+    static func pronounceable(_ t: String) -> String {
+        let letters = t.unicodeScalars.filter { CharacterSet.letters.contains($0) }
+        let latin = letters.filter { $0.value < 0x0250 }.count
+        guard letters.count > 3, Double(latin) / Double(letters.count) < 0.5 else { return t }
+        let hebrew = letters.contains { (0x0590...0x05FF).contains($0.value) }
+        let arabic = letters.contains { (0x0600...0x06FF).contains($0.value) }
+        let cyrillic = letters.contains { (0x0400...0x04FF).contains($0.value) }
+        let name = hebrew ? "hebreo" : arabic ? "árabe" : cyrillic ? "cirílico" : "otro alfabeto"
+        return "(texto en \(name)). "
+    }
+
+    /// Parte el texto en frases (líneas y . ! ?) y, dentro de cada frase, en tramos por idioma cuando cambia entre
+    /// cláusulas (comas, punto y coma, guiones): "Hola Ana, how are you, nos vemos" se lee con dos voces.
+    /// Devuelve cada tramo con su posición en el texto original (para el resaltado).
+    static func languageRuns(_ text: String) -> [(String, Int)] {
+        let ns = text as NSString
+        guard ns.length > 0 else { return [] }
+        var out: [(String, Int)] = []
+        let sentences = rx(#"[^\n.!?…]+(?:[.!?…]+|$)\s*|[.!?…\n]+\s*"#).matches(in: text, range: NSRange(location: 0, length: ns.length))
+        for m in sentences {
+            let sentence = ns.substring(with: m.range)
+            guard !sentence.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            let base = m.range.location
+            let sns = sentence as NSString
+            var runs: [(String, Int, String)] = []
+            for c in rx(#"[^,;:—–]+(?:[,;:—–]+\s*|$)"#).matches(in: sentence, range: NSRange(location: 0, length: sns.length)) {
+                let piece = sns.substring(with: c.range)
+                let words = piece.split(whereSeparator: { !$0.isLetter }).filter { $0.count > 1 }.count
+                let lang = words >= 3 ? textLanguage(piece) : (runs.last?.2 ?? textLanguage(piece))
+                if let last = runs.last, last.2 == lang {
+                    runs[runs.count - 1] = (last.0 + piece, last.1, lang)
+                } else {
+                    runs.append((piece, c.range.location, lang))
+                }
+            }
+            if runs.count <= 1 { out.append((sentence, base)) }
+            else { for r in runs { out.append((r.0, base + r.1)) } }
+        }
+        return out.isEmpty ? [(text, 0)] : out
     }
 
     func stop() {
@@ -3703,11 +3748,29 @@ final class Controller: NSObject {
                 answer = (lines.first ?? "").replacingOccurrences(of: ":", with: ".") + " " + items.prefix(6).joined(separator: ", ") + (items.count > 6 ? (replyLang == "en" ? " and more." : " y más.") : ".")
             }
             else {
+                let en = replyLang == "en"
+                let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm"; f.locale = Locale(identifier: "en_US_POSIX")
+                func ago(_ stamp: String) -> String {
+                    guard let d = f.date(from: stamp) else { return "" }
+                    let mins = Int(Date().timeIntervalSince(d) / 60)
+                    if mins < 2 { return en ? "just now" : "ahora mismo" }
+                    if mins < 60 { return en ? "\(mins) minutes ago" : "hace \(mins) minutos" }
+                    let hours = mins / 60
+                    if hours < 24 { return en ? (hours == 1 ? "an hour ago" : "\(hours) hours ago") : (hours == 1 ? "hace una hora" : "hace \(hours) horas") }
+                    if Calendar.current.isDateInYesterday(d) { return en ? "yesterday" : "ayer" }
+                    let w = DateFormatter(); w.locale = Locale(identifier: en ? "en_US" : "es_MX"); w.dateFormat = hours < 24 * 6 ? "EEEE" : "d 'de' MMMM"
+                    return (en ? "on " : "el ") + w.string(from: d)
+                }
                 let items = out.split(separator: "\n").map { line -> String in
                     let p = line.split(separator: "|", maxSplits: 2).map { $0.trimmingCharacters(in: .whitespaces) }
-                    return p.count == 3 ? "\(readable(p[1], isName: true)): \(readable(p[2]))" : String(line)
+                    guard p.count == 3 else { return String(line) }
+                    let who = p[1].replacingOccurrences(of: " -> yo", with: "").replacingOccurrences(of: "yo -> ", with: (en ? "you to " : "tú a "))
+                    let text = readable(p[2])
+                    let body = text.count > 220 ? String(text.prefix(220)) + "…" : text
+                    return (en ? "From " : "De ") + readable(who, isName: true) + ", " + ago(p[0]) + ": " + body
                 }
-                answer = (replyLang == "en" ? "Latest WhatsApp messages: " : "Últimos mensajes de WhatsApp: ") + items.joined(separator: ". ")
+                let intro = en ? "You have recent messages in \(items.count) chats." : "Tienes mensajes recientes en \(items.count) chats."
+                answer = ([intro] + items).joined(separator: "\n")
             }
             logConv("< \(answer.prefix(300))")
             speak(answer, thenIdle: false); return
