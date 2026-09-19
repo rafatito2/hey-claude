@@ -1300,6 +1300,10 @@ final class SettingsWindow: NSObject {
     private let neuralENPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let neuralStatus = NSTextField(labelWithString: "")
     private let neuralInstall = NSButton(title: "Instalar Kokoro…", target: nil, action: nil)
+    private let whisperCheck = NSButton(checkboxWithTitle: "Reconocimiento preciso con Whisper (local): afina cada orden con tu vocabulario", target: nil, action: nil)
+    private let whisperModelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let whisperStatus = NSTextField(labelWithString: "")
+    private let whisperInstall = NSButton(title: "Instalar Whisper…", target: nil, action: nil)
     private let rateLabel = NSTextField(labelWithString: "")
     private let waitStepper = NSStepper(frame: .zero)
     private let waitLabel = NSTextField(labelWithString: "")
@@ -1452,10 +1456,19 @@ final class SettingsWindow: NSObject {
             p.identifier = NSUserInterfaceItemIdentifier(k)
         }
         for p in [taskEffortPopup, modelPopups["simple"]!, modelPopups["normal"]!, modelPopups["profundo"]!] { p.widthAnchor.constraint(equalToConstant: 240).isActive = true }
+        whisperCheck.target = self; whisperCheck.action = #selector(whisperChanged)
+        whisperModelPopup.addItems(withTitles: WhisperASR.models.map { $0.1 }); whisperModelPopup.target = self; whisperModelPopup.action = #selector(whisperModelChanged)
+        whisperModelPopup.widthAnchor.constraint(equalToConstant: 240).isActive = true
+        whisperInstall.target = self; whisperInstall.action = #selector(installWhisper)
+        whisperStatus.font = .systemFont(ofSize: 11); whisperStatus.textColor = .secondaryLabelColor
         let convGrid = grid([
             [section("Escucha")],
             [label("Espera tras responder:"), inline([waitStepper, waitLabel])],
             [NSGridCell.emptyContentView, soundCheck],
+            [NSGridCell.emptyContentView, whisperCheck],
+            [label("Modelo de Whisper:"), whisperModelPopup],
+            [NSGridCell.emptyContentView, inline([whisperInstall, whisperStatus])],
+            [note("Apple sigue detectando \"hey Claude\" y mostrando la orden en vivo; al terminar, Whisper (whisper.cpp con Metal, todo en tu Mac) transcribe el audio de la orden usando tu vocabulario y correcciones como pista. Si tarda más de 2.5 s o falla, se usa el texto de Apple.")],
             [section("Modelos")],
             [label("Órdenes simples:"), modelPopups["simple"]!],
             [label("Órdenes normales:"), modelPopups["normal"]!],
@@ -1657,6 +1670,7 @@ final class SettingsWindow: NSObject {
         let idx = ["haiku": 0, "sonnet": 1, "opus": 2, "default": 3]
         for (k, p) in modelPopups { p.selectItem(at: idx[tiers[k] ?? "default"] ?? 3) }
         refreshNeural()
+        refreshWhisper()
         refreshUsage()
         refreshMemory()
     }
@@ -1700,6 +1714,30 @@ final class SettingsWindow: NSObject {
         MemoryFile.append(t); memoryField.stringValue = ""; refreshMemory()
     }
     @objc private func openContextFile() { NSWorkspace.shared.open(contextFile) }
+
+    private func refreshWhisper() {
+        whisperCheck.state = WhisperASR.enabled ? .on : .off
+        whisperCheck.isEnabled = WhisperASR.installed
+        whisperModelPopup.selectItem(at: WhisperASR.models.firstIndex { $0.0 == WhisperASR.model } ?? 0)
+        whisperInstall.title = WhisperASR.installed ? "Reinstalar Whisper…" : "Instalar Whisper…"
+        whisperStatus.stringValue = "Estado: " + (controller?.speaker.whisper.statusText ?? "")
+    }
+    @objc private func whisperChanged() {
+        WhisperASR.enabled = whisperCheck.state == .on
+        if WhisperASR.enabled { controller?.speaker.whisper.start() } else { controller?.speaker.whisper.stop() }
+        refreshWhisper()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.refreshWhisper() }
+    }
+    @objc private func whisperModelChanged() {
+        UserDefaults.standard.set(WhisperASR.models[max(0, whisperModelPopup.indexOfSelectedItem)].0, forKey: "whisperModel")
+        controller?.speaker.whisper.restartIfModelChanged()
+        refreshWhisper()
+    }
+    @objc private func installWhisper() {
+        guard FileManager.default.fileExists(atPath: WhisperASR.setupScript.path) else { whisperStatus.stringValue = "Falta \(WhisperASR.setupScript.path)"; return }
+        NSWorkspace.shared.open([WhisperASR.setupScript], withApplicationAt: URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app"), configuration: NSWorkspace.OpenConfiguration())
+        whisperStatus.stringValue = "Instalando en Terminal… al terminar, activa la casilla"
+    }
 
     private func refreshNeural() {
         neuralCheck.state = NeuralVoice.enabled ? .on : .off
@@ -1947,6 +1985,15 @@ final class Listener {
     var onAutoRestart: (() -> Void)?
     var beforeStart: ((AVAudioEngine) -> Void)?
     private(set) var lastRestart = Date()
+    /// Últimos 40 s de audio mono 16 kHz, para afinar la orden con Whisper al terminar
+    private var ring: [Float] = []
+    private let ringLock = NSLock()
+    private let ringMax = 16000 * 40
+    func audio(lastSeconds: Double) -> [Float] {
+        ringLock.lock(); defer { ringLock.unlock() }
+        let n = min(ring.count, Int(lastSeconds * 16000))
+        return Array(ring.suffix(n))
+    }
     private var peak: Float = 0
     private var lastPeakLog = Date()
 
@@ -2079,6 +2126,12 @@ final class Listener {
             self.lock.lock(); let reqs = Array(self.requests.values); self.lock.unlock()
             for r in reqs { r.append(out) }
             if let ch = out.floatChannelData?[0] {
+                self.ringLock.lock()
+                self.ring.append(contentsOf: UnsafeBufferPointer(start: ch, count: Int(out.frameLength)))
+                if self.ring.count > self.ringMax { self.ring.removeFirst(self.ring.count - self.ringMax) }
+                self.ringLock.unlock()
+            }
+            if let ch = out.floatChannelData?[0] {
                 let n = Int(out.frameLength)
                 var sum: Float = 0
                 var i = 0
@@ -2177,6 +2230,122 @@ final class Listener {
         tasks.values.forEach { $0.cancel() }; tasks.removeAll()
         requests.values.forEach { $0.endAudio() }; requests.removeAll()
         lock.unlock()
+    }
+}
+
+// MARK: - Reconocimiento preciso local (Whisper)
+
+/// Servidor whisper.cpp (Metal) que afina la orden al final: Apple sigue activando y mostrando en vivo;
+/// Whisper transcribe el audio de la orden con el vocabulario como pista. Si falla o tarda, se usa el texto de Apple.
+final class WhisperASR {
+    static let dir = baseDir.appendingPathComponent("whisper")
+    static let setupScript = baseDir.appendingPathComponent("tts/setup_whisper.sh")
+    static let server = ["/opt/homebrew/bin/whisper-server", "/usr/local/bin/whisper-server"].first { FileManager.default.isExecutableFile(atPath: $0) }
+    static let models: [(String, String)] = [("ggml-large-v3-turbo-q5_0.bin", "large-v3-turbo (preciso, 570 MB)"), ("ggml-small-q5_1.bin", "small (ligero, 190 MB)")]
+    static var model: String { UserDefaults.standard.string(forKey: "whisperModel") ?? models[0].0 }
+    static var modelFile: URL { dir.appendingPathComponent(model) }
+    static var installed: Bool { server != nil && FileManager.default.fileExists(atPath: modelFile.path) }
+    static var enabled: Bool {
+        get { UserDefaults.standard.bool(forKey: "whisperASR") }
+        set { UserDefaults.standard.set(newValue, forKey: "whisperASR") }
+    }
+    private let port = 8790
+    private var process: Process?
+    private(set) var ready = false
+    private var failures = 0
+    private(set) var sessionDisabled = false
+    private let session: URLSession = { let c = URLSessionConfiguration.ephemeral; c.timeoutIntervalForRequest = 10; return URLSession(configuration: c) }()
+    var statusText: String {
+        if WhisperASR.server == nil { return "whisper.cpp no instalado" }
+        if !FileManager.default.fileExists(atPath: WhisperASR.modelFile.path) { return "Falta el modelo" }
+        if !WhisperASR.enabled { return "Desactivado" }
+        if sessionDisabled { return "Falló; usando solo Apple" }
+        return ready ? "Listo" : (process != nil ? "Arrancando…" : "Parado")
+    }
+
+    func start() {
+        guard WhisperASR.enabled, WhisperASR.installed, let bin = WhisperASR.server else { return }
+        sessionDisabled = false; failures = 0
+        guard process == nil else { return }
+        let logURL = WhisperASR.dir.appendingPathComponent("whisper.log")
+        if !FileManager.default.fileExists(atPath: logURL.path) { FileManager.default.createFile(atPath: logURL.path, contents: nil) }
+        let logHandle = try? FileHandle(forWritingTo: logURL); logHandle?.seekToEndOfFile()
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: bin)
+        p.arguments = ["-m", WhisperASR.modelFile.path, "--host", "127.0.0.1", "--port", "\(port)", "-t", "6", "--no-prints"]
+        p.standardOutput = logHandle; p.standardError = logHandle
+        p.terminationHandler = { [weak self] proc in DispatchQueue.main.async { guard let self, self.process === proc else { return }; self.process = nil; self.ready = false; logApp("El servidor de Whisper terminó (código \(proc.terminationStatus))") } }
+        do { try p.run(); process = p; logApp("Servidor de Whisper arrancando (pid \(p.processIdentifier), \(WhisperASR.model))"); pollHealth(attempt: 0) }
+        catch { logApp("No pude arrancar Whisper: \(error.localizedDescription)") }
+    }
+    func restartIfModelChanged() { if process != nil { stop() }; start() }
+    private func pollHealth(attempt: Int) {
+        guard process != nil, !ready, attempt < 90 else { return }
+        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/")!); req.timeoutInterval = 2
+        session.dataTask(with: req) { [weak self] _, resp, _ in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if let code = (resp as? HTTPURLResponse)?.statusCode, code < 500 { self.ready = true; logApp("Whisper listo") }
+                else { DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.pollHealth(attempt: attempt + 1) } }
+            }
+        }.resume()
+    }
+    func stop() {
+        guard let p = process else { return }
+        process = nil; ready = false
+        p.terminate(); let pid = p.processIdentifier
+        DispatchQueue.global().asyncAfter(deadline: .now() + 3) { kill(pid, SIGKILL) }
+        logApp("Servidor de Whisper apagado")
+    }
+
+    /// WAV PCM 16 bits mono 16 kHz a partir de muestras float.
+    static func wav(_ samples: [Float]) -> Data {
+        var d = Data(); let n = samples.count
+        func u32(_ v: UInt32) { var x = v.littleEndian; d.append(Data(bytes: &x, count: 4)) }
+        func u16(_ v: UInt16) { var x = v.littleEndian; d.append(Data(bytes: &x, count: 2)) }
+        d.append("RIFF".data(using: .ascii)!); u32(UInt32(36 + n * 2)); d.append("WAVE".data(using: .ascii)!)
+        d.append("fmt ".data(using: .ascii)!); u32(16); u16(1); u16(1); u32(16000); u32(32000); u16(2); u16(16)
+        d.append("data".data(using: .ascii)!); u32(UInt32(n * 2))
+        var pcm = [Int16](repeating: 0, count: n)
+        for i in 0..<n { pcm[i] = Int16(max(-1, min(1, samples[i])) * 32767) }
+        pcm.withUnsafeBufferPointer { d.append(Data(buffer: $0)) }
+        return d
+    }
+
+    /// Transcribe el audio; completion en el hilo principal con el texto o nil (usar Apple).
+    func transcribe(_ samples: [Float], lang: String, prompt: String, timeout: TimeInterval, completion: @escaping (String?) -> Void) {
+        guard ready, !sessionDisabled, samples.count > 4000 else { completion(nil); return }
+        let boundary = "hc-\(UUID().uuidString)"
+        var body = Data()
+        func field(_ name: String, _ value: String) {
+            body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n".data(using: .utf8)!)
+        }
+        field("response_format", "json"); field("temperature", "0"); field("language", lang)
+        if !prompt.isEmpty { field("prompt", prompt) }
+        body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"orden.wav\"\r\nContent-Type: audio/wav\r\n\r\n".data(using: .utf8)!)
+        body.append(WhisperASR.wav(samples))
+        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/inference")!)
+        req.httpMethod = "POST"; req.timeoutInterval = timeout
+        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        req.httpBody = body
+        let t0 = Date()
+        session.dataTask(with: req) { [weak self] data, resp, err in
+            DispatchQueue.main.async {
+                guard let self else { completion(nil); return }
+                let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                guard let data, code == 200, let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let text = obj["text"] as? String else {
+                    self.failures += 1
+                    logApp("Whisper falló (\(err?.localizedDescription ?? "estado \(code)"))")
+                    if self.failures >= 3 { self.sessionDisabled = true; logApp("Whisper desactivado hasta reiniciar") }
+                    completion(nil); return
+                }
+                self.failures = 0
+                let clean = text.replacingOccurrences(of: #"\[[^\]]*\]|\([^)]*\)"#, with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
+                if debugText { logApp(String(format: "Whisper: %.2f s para %.1f s de audio", Date().timeIntervalSince(t0), Double(samples.count) / 16000)) }
+                completion(clean.isEmpty ? nil : clean)
+            }
+        }.resume()
     }
 }
 
@@ -2306,6 +2475,7 @@ final class NeuralVoice {
 
 final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
     let neural = NeuralVoice()
+    let whisper = WhisperASR()
     private let synth = AVSpeechSynthesizer()
     private(set) var voice: AVSpeechSynthesisVoice?
     private(set) var voiceEN: AVSpeechSynthesisVoice? = Speaker.defaultEnglishVoice()
@@ -3189,6 +3359,7 @@ final class Controller: NSObject {
         updateRemindersLine()
         logApp("Claude Voice listo")
         speaker.neural.start()
+        speaker.whisper.start()
         let tiers = loadModelTiers()
         let normal = tiers["normal"] ?? "sonnet"
         claude.prewarm(model: normal == "default" ? nil : normal)
@@ -3331,6 +3502,7 @@ final class Controller: NSObject {
         let quiet = Date().timeIntervalSince(lastChange)
         switch state {
         case .listening:
+            if refining { return }
             let cmd = commandText.trimmingCharacters(in: .whitespacesAndNewlines)
             if !cmd.isEmpty && quiet > 1.9 {
                 commit(cmd)
@@ -3378,7 +3550,33 @@ final class Controller: NSObject {
         setIcon("mic.circle.fill")
     }
 
-    private func commit(_ cmdRaw: String) {
+    private var refining = false
+    /// Orden terminada: si Whisper está listo, afina el texto con el audio de la orden antes de enviarla.
+    private func commit(_ cmdRaw: String, refine: Bool = true) {
+        let words = cmdRaw.split(separator: " ").count
+        guard refine, !typedReply, WhisperASR.enabled, speaker.whisper.ready, words >= 3, !refining else { commitFinal(cmdRaw); return }
+        let seconds = min(30, Date().timeIntervalSince(listenStart) + 0.6)
+        let samples = listener.audio(lastSeconds: seconds)
+        let vocab = loadVocab() + loadCorrections().map { $0.1 }
+        let prompt = Array(Set(vocab)).sorted().joined(separator: ", ").prefix(300)
+        refining = true
+        overlay.set("Afinando…", cmdRaw, .thinking)
+        let t0 = Date()
+        speaker.whisper.transcribe(samples, lang: activeLang, prompt: String(prompt), timeout: 2.5) { [weak self] text in
+            guard let self else { return }
+            self.refining = false
+            guard self.state == .listening else { return }   // se canceló mientras tanto
+            var final = cmdRaw
+            if let text {
+                let t = commandAfterWake(text).flatMap { $0.isEmpty ? nil : $0 } ?? text
+                if !t.isEmpty { final = t }
+                logApp(String(format: "Whisper (%.2f s): \"%@\" → \"%@\"", Date().timeIntervalSince(t0), cmdRaw, final))
+            } else { logApp("Whisper sin resultado; uso el texto de Apple") }
+            self.commitFinal(final)
+        }
+    }
+
+    private func commitFinal(_ cmdRaw: String) {
         var cmd = fixTitleCase(cmdRaw)
         let corrected = applyCorrections(cmd)
         if corrected != cmd { logApp("Corrección de dictado: \"\(cmd)\" → \"\(corrected)\""); cmd = corrected }
@@ -3946,7 +4144,7 @@ final class Controller: NSObject {
         overlay.set("Rutina", r.text, .listening)
         overlay.show()
         media.pauseIfPlaying()
-        commit(r.text)
+        commit(r.text, refine: false)
     }
 
     func typedCommand(_ text: String) {
@@ -4569,6 +4767,7 @@ final class Controller: NSObject {
 
     /// Botón ✕ del widget: termina la conversación de inmediato y cierra el widget.
     func cancelPressed() {
+        refining = false
         promoteWork?.cancel(); promoteWork = nil
         if let d = pendingTask { pendingTask = nil; tasks.finish(d, status: .cancelled, message: nil) }
         speakWatchdog?.cancel()
@@ -4636,6 +4835,7 @@ final class Controller: NSObject {
     /// Apaga el proceso de conversación y los de todas las tareas.
     func shutdownProcesses() {
         speaker.neural.stop()
+        speaker.whisper.stop()
         claude.stop()
         for t in tasks.running { t.process?.cancel() }
     }
