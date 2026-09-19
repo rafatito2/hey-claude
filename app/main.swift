@@ -2272,7 +2272,7 @@ final class WhisperASR {
         let logHandle = try? FileHandle(forWritingTo: logURL); logHandle?.seekToEndOfFile()
         let p = Process()
         p.executableURL = URL(fileURLWithPath: bin)
-        p.arguments = ["-m", WhisperASR.modelFile.path, "--host", "127.0.0.1", "--port", "\(port)", "-t", "6", "--no-prints"]
+        p.arguments = ["-m", WhisperASR.modelFile.path, "--host", "127.0.0.1", "--port", "\(port)", "-t", "6"]
         p.standardOutput = logHandle; p.standardError = logHandle
         p.terminationHandler = { [weak self] proc in DispatchQueue.main.async { guard let self, self.process === proc else { return }; self.process = nil; self.ready = false; logApp("El servidor de Whisper terminó (código \(proc.terminationStatus))") } }
         do { try p.run(); process = p; logApp("Servidor de Whisper arrancando (pid \(p.processIdentifier), \(WhisperASR.model))"); pollHealth(attempt: 0) }
@@ -2285,7 +2285,11 @@ final class WhisperASR {
         session.dataTask(with: req) { [weak self] _, resp, _ in
             DispatchQueue.main.async {
                 guard let self else { return }
-                if let code = (resp as? HTTPURLResponse)?.statusCode, code < 500 { self.ready = true; logApp("Whisper listo") }
+                if let code = (resp as? HTTPURLResponse)?.statusCode, code < 500 {
+                    self.ready = true; logApp("Whisper listo")
+                    // Calentamiento: la primera inferencia tarda el doble; que no le toque a tu primera orden
+                    self.transcribe([Float](repeating: 0, count: 16000), lang: "es", prompt: "", timeout: 20) { _ in }
+                }
                 else { DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.pollHealth(attempt: attempt + 1) } }
             }
         }.resume()
@@ -3568,8 +3572,10 @@ final class Controller: NSObject {
             guard self.state == .listening else { return }   // se canceló mientras tanto
             var final = cmdRaw
             if let text {
-                let t = commandAfterWake(text).flatMap { $0.isEmpty ? nil : $0 } ?? text
-                if !t.isEmpty { final = t }
+                // Quita la palabra de activación si Whisper la oyó ("Hey Claude", "El Cloth", "Oye Cloud"…)
+                let stripped = text.replacingOccurrences(of: #"^\s*(?:(?:hey|ey|hei|oye|hola|ok|okay|el|o)\s*[,.]?\s*)?(?:claude|cloud|clau|cloth|clot|klaud|klaus|icloud)\b[\s,.:]*"#, with: "", options: [.regularExpression, .caseInsensitive])
+                let t = commandAfterWake(text).flatMap { $0.isEmpty ? nil : $0 } ?? stripped
+                if !t.trimmingCharacters(in: .whitespaces).isEmpty { final = t.trimmingCharacters(in: .whitespaces) }
                 logApp(String(format: "Whisper (%.2f s): \"%@\" → \"%@\"", Date().timeIntervalSince(t0), cmdRaw, final))
             } else { logApp("Whisper sin resultado; uso el texto de Apple") }
             self.commitFinal(final)
