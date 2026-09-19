@@ -15,6 +15,10 @@
   <key>NSHighResolutionCapable</key><true/>
   <key>NSMicrophoneUsageDescription</key><string>Claude Voice necesita el micrófono para escuchar "hey claude" y tus instrucciones.</string>
   <key>NSSpeechRecognitionUsageDescription</key><string>Claude Voice usa el reconocimiento de voz del sistema para transcribir lo que dices.</string>
+  <key>NSCalendarsFullAccessUsageDescription</key><string>Claude Voice lee y ordena tus calendarios cuando se lo pides.</string>
+  <key>NSCalendarsUsageDescription</key><string>Claude Voice lee y ordena tus calendarios cuando se lo pides.</string>
+  <key>NSRemindersFullAccessUsageDescription</key><string>Claude Voice lee y crea recordatorios cuando se lo pides.</string>
+  <key>NSRemindersUsageDescription</key><string>Claude Voice lee y crea recordatorios cuando se lo pides.</string>
   <key>NSAppleEventsUsageDescription</key><string>Claude Voice ejecuta acciones en tu Mac cuando se lo pides.</string>
 </dict>
 </plist>
