@@ -72,6 +72,7 @@ Commits: mensaje en español, sin líneas de atribución de Claude (regla global
 
 9. **Kokoro necesita el modelo de spaCy instalado a mano** (`en_core_web_sm`): si falta, misaki intenta instalarlo con `uv pip` fuera del venv y falla; el servidor corre con `VIRTUAL_ENV` apuntando al venv por lo mismo.
 10. **Los avisos de `scheduleBuffer` llegan cuando el buffer termina**, no cuando empieza: con la voz neuronal (frase entera en un buffer) el resaltado arrancaba al final. Se programa una cabecera de 0.1 s con aviso y el resto detrás.
+11. **`NSGridView.removeRow` no quita las vistas de la jerarquía**: al refrescar la tabla por modelo de Uso hay que hacer `removeFromSuperview` a cada celda antes, o los textos se apilan.
 
 ## Pendientes conocidos
 

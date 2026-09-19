@@ -1142,7 +1142,7 @@ final class SettingsWindow: NSObject {
 
     // Etiquetas de la pestaña Uso, por clave "fila.columna"
     private var usageLabels: [String: NSTextField] = [:]
-    private let usageModels = NSGridView(views: [])
+    private let usageModels = NSGridView(numberOfColumns: 2, rows: 0)
     private var tabView: NSTabView?
 
     private func label(_ t: String) -> NSTextField {
@@ -1352,7 +1352,12 @@ final class SettingsWindow: NSObject {
             usageLabels["\(r).cache"]?.stringValue = UsageStore.tokens(b.cacheRead + b.cacheWrite)
             usageLabels["\(r).cost"]?.stringValue = UsageStore.money(b.cost)
         }
-        while usageModels.numberOfRows > 0 { usageModels.removeRow(at: 0) }
+        // removeRow no saca las vistas de la jerarquía: hay que quitarlas antes o se apilan unas sobre otras
+        while usageModels.numberOfRows > 0 {
+            let r = usageModels.row(at: 0)
+            for c in 0..<usageModels.numberOfColumns { r.cell(at: c).contentView?.removeFromSuperview() }
+            usageModels.removeRow(at: 0)
+        }
         let models = u.month.1.sorted { $0.value.cost > $1.value.cost }
         if models.isEmpty {
             usageModels.addRow(with: [note("Todavía no hay uso este mes.")])
