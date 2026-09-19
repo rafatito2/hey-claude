@@ -33,13 +33,14 @@ if [[ "$SRC" != "$DIR" ]]; then
   say_step "Copiando los archivos de ejecución a $DIR"
   cp "$SRC/ask.sh" "$SRC/make_shortcut.py" "$DIR/"
   cp "$SRC/tareas/bestmove.sh" "$DIR/tareas/"
-  cp "$SRC/contexto.example.md" "$SRC/vocabulario.example.txt" "$DIR/"
+  cp "$SRC/contexto.example.md" "$SRC/vocabulario.example.txt" "$SRC/correcciones.example.txt" "$DIR/"
 fi
 cd "$DIR"
 
 say_step "Preparando configuración"
 [[ -f contexto.md ]] || cp contexto.example.md contexto.md
 [[ -f vocabulario.txt ]] || cp vocabulario.example.txt vocabulario.txt
+[[ -f correcciones.txt ]] || cp correcciones.example.txt correcciones.txt
 [[ -f modelos.txt ]] || cat > modelos.txt <<'EOF'
 # Qué modelo usa Claude Voice según la orden. Alias válidos: haiku, sonnet, opus, default
 simple=haiku

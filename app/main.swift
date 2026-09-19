@@ -18,6 +18,7 @@ let logFile = baseDir.appendingPathComponent("voice.log")
 let appLogFile = baseDir.appendingPathComponent("app.log")
 let contextFile = baseDir.appendingPathComponent("contexto.md")
 let vocabFile = baseDir.appendingPathComponent("vocabulario.txt")
+let correctionsFile = baseDir.appendingPathComponent("correcciones.txt")
 let triggerFile = baseDir.appendingPathComponent(".trigger")
 let logoFile = baseDir.appendingPathComponent("logo.png")
 let voiceName = "Paulina"
@@ -75,6 +76,35 @@ func systemPrompt() -> String {
 func loadVocab() -> [String] {
     guard let t = try? String(contentsOf: vocabFile, encoding: .utf8) else { return ["Claude"] }
     return t.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty && !$0.hasPrefix("#") }
+}
+
+/// Correcciones de dictado: "lo que oye | otra forma => lo que quisiste decir", una por línea.
+/// Se aplican a la orden completa antes de enviarla, sin distinguir mayúsculas y solo sobre palabras completas.
+func loadCorrections() -> [(NSRegularExpression, String)] {
+    guard let t = try? String(contentsOf: correctionsFile, encoding: .utf8) else { return [] }
+    var out: [(NSRegularExpression, String)] = []
+    for raw in t.split(separator: "\n") {
+        let line = raw.trimmingCharacters(in: .whitespaces)
+        guard !line.isEmpty, !line.hasPrefix("#") else { continue }
+        let sep = line.range(of: "=>") ?? line.range(of: "->")
+        guard let sep else { continue }
+        let right = line[sep.upperBound...].trimmingCharacters(in: .whitespaces)
+        let alts = line[..<sep.lowerBound].split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        guard !alts.isEmpty, !right.isEmpty else { continue }
+        let body = alts.map { NSRegularExpression.escapedPattern(for: $0).replacingOccurrences(of: " ", with: "\\s+") }.joined(separator: "|")
+        if let r = try? NSRegularExpression(pattern: "(?<![\\p{L}\\p{N}])(?:\(body))(?![\\p{L}\\p{N}])", options: [.caseInsensitive]) {
+            out.append((r, right))
+        }
+    }
+    return out
+}
+
+func applyCorrections(_ s: String) -> String {
+    var out = s
+    for (r, right) in loadCorrections() {
+        out = r.stringByReplacingMatches(in: out, range: NSRange(location: 0, length: (out as NSString).length), withTemplate: NSRegularExpression.escapedTemplate(for: right))
+    }
+    return out
 }
 
 // MARK: - Elección de modelo
@@ -1938,6 +1968,9 @@ final class PersistentClaude {
     }
     private var turn: Turn?
     private var textEndedWithNewline = true   // para separar bloques de texto consecutivos
+    private var draining = false               // turno interrumpido: se ignora todo hasta su "result"
+    private var drainTimeout: DispatchWorkItem?
+    private var pendingSend: (() -> Void)?     // orden recibida mientras se vaciaba el turno interrumpido
     private var generation = 0
     private(set) var lastFailureWasExit = false
     var isRunning: Bool { process?.isRunning ?? false }
@@ -2021,6 +2054,7 @@ final class PersistentClaude {
     func stop() {
         if process != nil { logApp("Apago el proceso de Claude Code") }
         generation += 1
+        draining = false; drainTimeout?.cancel(); drainTimeout = nil; pendingSend = nil
         if let t = turn { turn = nil; t.completion(t.reply, true) }
         try? stdinHandle?.close()
         if let p = process, p.isRunning {
@@ -2038,6 +2072,27 @@ final class PersistentClaude {
         stop()
     }
 
+    /// Interrumpe el turno en curso sin apagar el proceso (Claude Code responde en ~30 ms y sigue vivo,
+    /// así la siguiente orden no paga el arranque de 2 a 4 s). Si no responde en 4 s, se reinicia.
+    func interruptTurn() {
+        guard isRunning, turn != nil, let stdin = stdinHandle else { turn = nil; return }
+        turn = nil
+        draining = true
+        let msg: [String: Any] = ["type": "control_request", "request_id": "int-\(Int(Date().timeIntervalSince1970 * 1000))", "request": ["subtype": "interrupt"]]
+        if var data = try? JSONSerialization.data(withJSONObject: msg) { data.append(10); stdin.write(data) }
+        logApp("Interrumpo el turno de Claude Code (el proceso sigue vivo)")
+        drainTimeout?.cancel()
+        let w = DispatchWorkItem { [weak self] in
+            guard let self, self.draining else { return }
+            logApp("La interrupción no respondió; reinicio el proceso")
+            let pending = self.pendingSend
+            self.stop()
+            pending?()
+        }
+        drainTimeout = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: w)
+    }
+
     /// Arranca el proceso por adelantado para que la primera orden no espere.
     func prewarm(model: String?) {
         guard !isRunning else { return }
@@ -2046,6 +2101,11 @@ final class PersistentClaude {
     }
 
     func send(_ text: String, model: String?, onStatus: @escaping (String) -> Void, onText: @escaping (String) -> Void, completion: @escaping (String?, Bool) -> Void) {
+        if draining {
+            // El turno interrumpido aún no cerró: la orden espera a su "result" (milisegundos)
+            pendingSend = { [weak self] in self?.send(text, model: model, onStatus: onStatus, onText: onText, completion: completion) }
+            return
+        }
         var text = text
         let contextChanged = contextStamp != contextModified()
         if !isRunning || model != self.model || effort != startedEffort || (!ownSession && readSession() == nil) {
@@ -2079,6 +2139,15 @@ final class PersistentClaude {
 
     private func handle(_ obj: [String: Any]) {
         guard let type = obj["type"] as? String else { return }
+        if draining {
+            // Restos del turno interrumpido: solo nos interesa su cierre
+            if type == "result" {
+                draining = false; drainTimeout?.cancel(); drainTimeout = nil
+                let pending = pendingSend; pendingSend = nil
+                pending?()
+            }
+            return
+        }
         if type == "stream_event", let ev = obj["event"] as? [String: Any], (ev["type"] as? String) == "content_block_start",
            let block = ev["content_block"] as? [String: Any], (block["type"] as? String) == "text" {
             // Texto nuevo tras una herramienta: salto de línea para que no se pegue a la frase anterior (ni a un HITO)
@@ -2151,6 +2220,7 @@ final class Controller: NSObject {
     private var hotKeyRef: EventHotKeyRef?
     private var hotKeyRef2: EventHotKeyRef?
     private var escHotKeyRef: EventHotKeyRef?   // Esc solo mientras Claude escucha, piensa o habla
+    private var lastEscape = Date.distantPast    // doble Esc rápido cancela; uno solo puede ser para otra app
     private var smoothLevel: CGFloat = 0
     private var overlayLastReply = ""
     private var screenshotToDelete: URL? = nil
@@ -2292,12 +2362,20 @@ final class Controller: NSObject {
             let before = commandText
             // El reconocedor local empieza una transcripción nueva tras una pausa (el texto se encoge de golpe).
             // Conservamos lo dicho y seguimos sin exigir otra vez la palabra de activación.
-            if lastRawText.count > 6 && text.count * 2 < lastRawText.count {
+            // También cuenta como segmento nuevo que el texto ya no empiece igual (p. ej. "Hey Claude" → "Quiero que..."):
+            // con una activación corta el texto nuevo no es más corto y antes se perdía toda la orden.
+            let shrank = lastRawText.count > 6 && text.count * 2 < lastRawText.count
+            let firstNew = normalize(text).split(separator: " ").first.map(String.init) ?? ""
+            let firstOld = normalize(lastRawText).split(separator: " ").first.map(String.init) ?? ""
+            let sofarNorm = normalize(commandText).trimmingCharacters(in: .whitespaces)
+            let restartedByStart = !firstNew.isEmpty && !firstOld.isEmpty && firstNew != firstOld
+                && (sofarNorm.isEmpty || !normalize(text).hasPrefix(sofarNorm))
+            if shrank || restartedByStart {
                 let sofar = commandText.trimmingCharacters(in: .whitespaces)
                 segmentPrefix = sofar.isEmpty ? "" : sofar + " "
                 followUp = true
                 baselineRaw = ""
-                logApp("Nuevo segmento del reconocedor; conservo: \"\(sofar)\"")
+                logApp("Nuevo segmento del reconocedor (\(shrank ? "más corto" : "otro inicio")); conservo: \"\(sofar)\"")
             }
             lastRawText = text
             // Sin reiniciar el reconocedor: descarta las palabras que ya existían al empezar a escuchar
@@ -2308,6 +2386,7 @@ final class Controller: NSObject {
                 fresh = words.count > bw ? words.dropFirst(bw).joined(separator: " ") : ""
             }
             if followUp { fresh = stripReplyEcho(fresh) }
+            if followUp, let afterWake = commandAfterWake(fresh) { fresh = afterWake }   // "hey claude" repetido a mitad de orden
             if followUp { commandText = joinWithoutOverlap(segmentPrefix, fresh) } else if let cmd = commandAfterWake(text) { commandText = cmd }
             commandText = fixTitleCase(commandText)
             if debugText && commandText != before { logApp("orden parcial (seguimiento=\(followUp)): \"\(commandText)\"") }
@@ -2336,14 +2415,14 @@ final class Controller: NSObject {
                 logApp("Activación durante el procesamiento")
                 if cmd.isEmpty {
                     // Solo "hey claude": corta la orden y escucha
-                    claude.cancel(); processDone = true
+                    claude.interruptTurn(); processDone = true
                     logConv("< (cancelado por nueva orden)")
                     enterListening(followUp: true)
                 } else if claude.steer("El usuario dice ahora: \"\(cmd)\". Deja lo que estabas haciendo si ya no aplica y atiende esto.") {
                     logConv("> [inyectada] \(cmd)")
                     overlay.set("Pensando · \(currentModelName)", cmd, .thinking)
                 } else {
-                    claude.cancel(); processDone = true
+                    claude.interruptTurn(); processDone = true
                     enterListening(followUp: true)
                     segmentPrefix = ""; commandText = cmd; lastChange = Date(); overlay.set("Escuchando…", cmd, .listening)
                 }
@@ -2385,6 +2464,12 @@ final class Controller: NSObject {
             let cmd = commandText.trimmingCharacters(in: .whitespacesAndNewlines)
             if !cmd.isEmpty && quiet > 1.9 {
                 commit(cmd)
+            } else if cmd.isEmpty && !followUp && quiet > 1.9 && Date().timeIntervalSince(listenStart) > 4,
+                      case let heard = (commandAfterWake(rawNow) ?? rawNow).trimmingCharacters(in: .whitespacesAndNewlines),
+                      heard.split(separator: " ").count >= 2 {
+                // Se oyeron palabras pero ninguna se aceptó como orden: mejor tomarlas que quedarse en "Te escucho"
+                logApp("Orden sin activación reconocida; tomo lo oído: \"\(heard)\"")
+                commit(heard)
             } else if cmd.isEmpty && Date().timeIntervalSince(listenStart) > (followUp ? Double(followUpSeconds) : 8) {
                 if overlay.isHovered { listenStart = Date(); return }   // está leyendo: sigue escuchando
                 logApp("Nadie habló, vuelvo a reposo")
@@ -2423,7 +2508,9 @@ final class Controller: NSObject {
     }
 
     private func commit(_ cmdRaw: String) {
-        let cmd = fixTitleCase(cmdRaw)
+        var cmd = fixTitleCase(cmdRaw)
+        let corrected = applyCorrections(cmd)
+        if corrected != cmd { logApp("Corrección de dictado: \"\(cmd)\" → \"\(corrected)\""); cmd = corrected }
         replyLang = languageScore(cmd) < 0 ? "en" : "es"
         logApp("Enviando orden [\(replyLang)]: \"\(cmd)\"")
         lastRawText = ""
@@ -2770,7 +2857,7 @@ final class Controller: NSObject {
         speakWatchdog?.cancel()
         speaker.onFinish = nil
         speaker.stop()
-        if !processDone { claude.cancel(); processDone = true; logConv("< (interrumpido) \(streamText.replacingOccurrences(of: "\n", with: " "))") }
+        if !processDone { claude.interruptTurn(); processDone = true; logConv("< (interrumpido) \(streamText.replacingOccurrences(of: "\n", with: " "))") }
         enterListening(followUp: true)
         let seedClean = seed.trimmingCharacters(in: .whitespacesAndNewlines)
         if !seedClean.isEmpty {
@@ -3213,7 +3300,7 @@ final class Controller: NSObject {
         speaker.onFinish = nil
         speaker.stop()
         if !processDone {
-            claude.cancel()
+            claude.interruptTurn()
             processDone = true
             logConv("< (cancelado por el usuario)")
         }
@@ -3257,6 +3344,12 @@ final class Controller: NSObject {
     @objc func openVocab() {
         if !FileManager.default.fileExists(atPath: vocabFile.path) { try? "# Palabras que el reconocedor debe conocer (una por línea)\nClaude\n".write(to: vocabFile, atomically: true, encoding: .utf8) }
         NSWorkspace.shared.open(vocabFile)
+    }
+    @objc func openCorrections() {
+        if !FileManager.default.fileExists(atPath: correctionsFile.path) {
+            try? "# Correcciones de dictado: lo que oye el reconocedor => lo que quisiste decir (una por línea).\n# Varias formas a la izquierda separadas por |. No distingue mayúsculas y solo cambia palabras completas.\nchef.com | enchef.com | chef punto com | chase.com | chest.com => chess.com\n".write(to: correctionsFile, atomically: true, encoding: .utf8)
+        }
+        NSWorkspace.shared.open(correctionsFile)
     }
     @objc func reloadConfig() {
         listener.vocab = loadVocab()
@@ -3321,6 +3414,7 @@ final class Controller: NSObject {
         for (t, s) in [("Historial de conversaciones", #selector(openHistory)),
                        ("Editar contexto personal", #selector(openContext)),
                        ("Editar vocabulario", #selector(openVocab)),
+                       ("Editar correcciones de dictado", #selector(openCorrections)),
                        ("Recargar configuración", #selector(reloadConfig))] {
             let i = NSMenuItem(title: t, action: s, keyEquivalent: ""); i.target = self; menu.addItem(i)
         }
@@ -3374,7 +3468,16 @@ final class Controller: NSObject {
             DispatchQueue.main.async {
                 switch hk.id {
                 case 2: controller.openInput()
-                case 3: logApp("Esc: cancelar en estado \(controller.state)"); controller.cancelPressed()
+                case 3:
+                    let now = Date()
+                    if now.timeIntervalSince(controller.lastEscape) < 0.8 {
+                        controller.lastEscape = .distantPast
+                        logApp("Doble Esc: cancelar en estado \(controller.state)")
+                        controller.cancelPressed()
+                    } else {
+                        controller.lastEscape = now
+                        controller.overlay.setTitle("Esc otra vez para cancelar")
+                    }
                 default: controller.manualListen()
                 }
             }

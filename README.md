@@ -8,7 +8,7 @@ Todo corre en tu Mac con **tu propia cuenta de Claude**. No hay servidores inter
 
 ## Qué hace
 
-- **Activación por voz** ("hey claude" u "oye claude"), por tecla (⌥⌘C), por clic en el widget o desde Siri con un Atajo. **Esc** cancela la orden en curso (mientras escucha, piensa o habla).
+- **Activación por voz** ("hey claude" u "oye claude"), por tecla (⌥⌘C), por clic en el widget o desde Siri con un Atajo. **Esc dos veces** seguidas cancela la orden en curso (mientras escucha, piensa o habla); un Esc solo no hace nada, por si era para otra app.
 - **Conversación continua**: tras cada respuesta sigue escuchando unos segundos; puedes interrumpirlo hablando encima, con el botón ■ del widget, o decir "para".
 - **Respuesta en streaming**: empieza a leer la primera frase mientras genera el resto, resaltando la palabra que va diciendo.
 - **Acciones en la Mac**: abre apps y páginas, ejecuta comandos de consulta (procesos, disco, batería…), crea y edita archivos, usa Chrome mediante la extensión *Claude in Chrome*, y Gmail/Google Calendar si los tienes conectados en Claude Code. Nunca borra archivos ni ejecuta comandos destructivos (lista de exclusión en el código).
@@ -75,7 +75,7 @@ Después:
 | "cómo vas" / "cancela la tarea" | Estado o cancelación de la tarea |
 | "gracias, listo" | Cierra la conversación |
 
-Menú de la barra: escuchar ahora, escribir una orden, nueva conversación, historial, contexto, vocabulario y Ajustes (voces, velocidad, espera tras responder, sonido, atajos de teclado, tema, modelos).
+Menú de la barra: escuchar ahora, escribir una orden, nueva conversación, historial, contexto, vocabulario, correcciones de dictado (`correcciones.txt`: "lo que oye => lo que quisiste decir", para deformaciones fijas como "chef.com => chess.com") y Ajustes (voces, velocidad, espera tras responder, sonido, atajos de teclado, tema, modelos).
 
 ## Archivos
 

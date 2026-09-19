@@ -1,0 +1,4 @@
+# Correcciones de dictado: lo que oye el reconocedor => lo que quisiste decir (una por línea).
+# Varias formas a la izquierda separadas por |. No distingue mayúsculas y solo cambia palabras completas.
+# Copia este archivo como correcciones.txt y agrega las deformaciones fijas de tu voz.
+chef.com | enchef.com | chef punto com | chase.com | chest.com | ches.com => chess.com
