@@ -76,7 +76,7 @@ Después:
 | "cómo vas" / "cancela la tarea" | Estado o cancelación de la tarea |
 | "gracias, listo" | Cierra la conversación |
 
-Menú de la barra: escuchar ahora, escribir una orden, nueva conversación, historial, contexto, vocabulario, correcciones de dictado (`correcciones.txt`: "lo que oye => lo que quisiste decir", para deformaciones fijas como "chef.com => chess.com") y Ajustes (voces, velocidad, espera tras responder, sonido, atajos de teclado, tema, modelos).
+Menú de la barra: escuchar ahora, escribir una orden, nueva conversación, uso de hoy (tokens y costo; clic para ver el detalle), historial, contexto, vocabulario, correcciones de dictado (`correcciones.txt`: "lo que oye => lo que quisiste decir", para deformaciones fijas como "chef.com => chess.com") y Ajustes, en pestañas: Voz (Apple y neuronal), Conversación (espera, sonido, modelos por nivel), Widget y atajos, y Uso (órdenes, tokens de entrada, salida y caché, y costo de hoy, del mes y total, por modelo; es el precio de lista que reporta Claude Code, con suscripción no se cobra aparte).
 
 ## Archivos
 

@@ -109,6 +109,70 @@ func applyCorrections(_ s: String) -> String {
     return out
 }
 
+// MARK: - Uso (tokens y costo)
+
+/// Contador persistente de tokens y costo por día y por modelo (~/claude-voice/uso.json).
+/// El costo es el precio de lista de la API que reporta Claude Code; con una suscripción no se cobra aparte.
+final class UsageStore {
+    static let shared = UsageStore()
+    static let file = baseDir.appendingPathComponent("uso.json")
+    struct Bucket: Codable {
+        var turns = 0, input = 0, output = 0, cacheRead = 0, cacheWrite = 0
+        var cost = 0.0
+        mutating func add(_ o: Bucket) { turns += o.turns; input += o.input; output += o.output; cacheRead += o.cacheRead; cacheWrite += o.cacheWrite; cost += o.cost }
+        var tokens: Int { input + output + cacheRead + cacheWrite }
+    }
+    struct Day: Codable { var total = Bucket(); var models: [String: Bucket] = [:] }
+    private(set) var days: [String: Day] = [:]
+    var onChange: (() -> Void)?
+
+    private init() {
+        if let d = try? Data(contentsOf: UsageStore.file), let v = try? JSONDecoder().decode([String: Day].self, from: d) { days = v }
+    }
+
+    static func key(_ date: Date = Date()) -> String { let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; return f.string(from: date) }
+
+    func add(model: String, _ b: Bucket) {
+        guard b.turns > 0 || b.tokens > 0 || b.cost > 0 else { return }
+        let k = UsageStore.key()
+        var day = days[k] ?? Day()
+        day.total.add(b)
+        var m = day.models[model] ?? Bucket(); m.add(b); day.models[model] = m
+        days[k] = day
+        save()
+        DispatchQueue.main.async { self.onChange?() }
+    }
+
+    func reset() { days = [:]; save(); onChange?() }
+
+    private func save() {
+        let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        if let d = try? enc.encode(days) { try? d.write(to: UsageStore.file, options: .atomic) }
+    }
+
+    /// Suma de los días cuya clave cumple el filtro.
+    func sum(where keep: (String) -> Bool) -> (Bucket, [String: Bucket]) {
+        var t = Bucket(); var models: [String: Bucket] = [:]
+        for (k, d) in days where keep(k) {
+            t.add(d.total)
+            for (m, b) in d.models { var x = models[m] ?? Bucket(); x.add(b); models[m] = x }
+        }
+        return (t, models)
+    }
+    var today: Bucket { sum { $0 == UsageStore.key() }.0 }
+    var month: (Bucket, [String: Bucket]) { let p = String(UsageStore.key().prefix(7)); return sum { $0.hasPrefix(p) } }
+    var total: (Bucket, [String: Bucket]) { sum { _ in true } }
+
+    static func tokens(_ n: Int) -> String {
+        n >= 1_000_000 ? String(format: "%.1f M", Double(n) / 1_000_000) : n >= 1000 ? String(format: "%.1f k", Double(n) / 1000) : "\(n)"
+    }
+    static func money(_ c: Double) -> String { c < 0.1 && c > 0 ? String(format: "$%.3f", c) : String(format: "$%.2f", c) }
+    static func modelName(_ id: String) -> String {
+        let l = id.lowercased()
+        return l.contains("haiku") ? "Haiku" : l.contains("sonnet") ? "Sonnet" : l.contains("opus") ? "Opus" : l.contains("fable") ? "Fable" : id
+    }
+}
+
 // MARK: - Elección de modelo
 
 let modelsFile = baseDir.appendingPathComponent("modelos.txt")
@@ -1076,60 +1140,117 @@ final class SettingsWindow: NSObject {
         window?.makeKeyAndOrderFront(nil)
     }
 
-    private func row(_ title: String, _ control: NSView) -> NSStackView {
-        let l = NSTextField(labelWithString: title)
+    // Etiquetas de la pestaña Uso, por clave "fila.columna"
+    private var usageLabels: [String: NSTextField] = [:]
+    private let usageModels = NSGridView(views: [])
+    private var tabView: NSTabView?
+
+    private func label(_ t: String) -> NSTextField {
+        let l = NSTextField(labelWithString: t)
         l.alignment = .right
-        l.widthAnchor.constraint(equalToConstant: 170).isActive = true
-        let r = NSStackView(views: [l, control])
-        r.orientation = .horizontal
-        r.spacing = 10
-        r.alignment = .firstBaseline
+        return l
+    }
+    private func note(_ t: String) -> NSTextField {
+        let n = NSTextField(wrappingLabelWithString: t)
+        n.font = .systemFont(ofSize: 11); n.textColor = .secondaryLabelColor
+        n.preferredMaxLayoutWidth = 470
+        return n
+    }
+    private func inline(_ views: [NSView], spacing: CGFloat = 8) -> NSStackView {
+        let r = NSStackView(views: views); r.spacing = spacing; r.alignment = .centerY
         return r
     }
 
-    private func header(_ t: String) -> NSTextField {
+    /// Rejilla de dos columnas: etiquetas a la derecha, controles alineados a la izquierda.
+    /// Un elemento con un solo view ocupa las dos columnas (títulos de sección y notas).
+    private func grid(_ rows: [[NSView]]) -> NSGridView {
+        let g = NSGridView(numberOfColumns: 2, rows: 0)
+        g.rowSpacing = 9; g.columnSpacing = 12
+        g.rowAlignment = .firstBaseline
+        g.column(at: 0).xPlacement = .trailing
+        g.column(at: 0).width = 190
+        g.column(at: 1).xPlacement = .leading
+        for r in rows {
+            if r.count == 1 {
+                let row = g.addRow(with: [r[0]])
+                row.mergeCells(in: NSRange(location: 0, length: 2))
+                if let f = r[0] as? NSTextField, f.font?.fontDescriptor.symbolicTraits.contains(.bold) == true {
+                    row.topPadding = 10; row.bottomPadding = 2
+                    row.rowAlignment = .none
+                    f.alignment = .left
+                } else {
+                    row.rowAlignment = .none
+                    row.cell(at: 0).xPlacement = .leading
+                }
+            } else {
+                g.addRow(with: r)
+            }
+        }
+        return g
+    }
+    private func section(_ t: String) -> NSTextField {
         let h = NSTextField(labelWithString: t)
-        h.font = .systemFont(ofSize: 13, weight: .semibold)
+        h.font = .boldSystemFont(ofSize: 13)
         return h
     }
 
+    /// Pestaña con la rejilla centrada y con márgenes.
+    private func tab(_ title: String, _ content: NSView) -> NSTabViewItem {
+        let v = NSView()
+        content.translatesAutoresizingMaskIntoConstraints = false
+        v.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.topAnchor.constraint(equalTo: v.topAnchor, constant: 18),
+            content.centerXAnchor.constraint(equalTo: v.centerXAnchor),
+            content.leadingAnchor.constraint(greaterThanOrEqualTo: v.leadingAnchor, constant: 16),
+            content.trailingAnchor.constraint(lessThanOrEqualTo: v.trailingAnchor, constant: -16),
+        ])
+        let item = NSTabViewItem(identifier: title)
+        item.label = title
+        item.view = v
+        return item
+    }
+
     private func build() {
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 520), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 560), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         w.title = "Ajustes de Claude Voice"
         w.isReleasedWhenClosed = false
         window = w
 
+        // Voz
         voicePopup.target = self; voicePopup.action = #selector(voiceChanged)
         voiceENPopup.target = self; voiceENPopup.action = #selector(voiceENChanged)
         rateSlider.target = self; rateSlider.action = #selector(rateChanged)
         rateSlider.isContinuous = false
         rateSlider.widthAnchor.constraint(equalToConstant: 220).isActive = true
-        let rateRow = NSStackView(views: [rateSlider, rateLabel]); rateRow.spacing = 8
+        rateLabel.widthAnchor.constraint(equalToConstant: 80).isActive = true
         let test = NSButton(title: "Escuchar muestra", target: self, action: #selector(testVoice))
         let more = NSButton(title: "Descargar más voces…", target: self, action: #selector(openVoiceSettings))
-        let voiceButtons = NSStackView(views: [test, more]); voiceButtons.spacing = 8
-
-        waitStepper.minValue = 3; waitStepper.maxValue = 20; waitStepper.increment = 1
-        waitStepper.target = self; waitStepper.action = #selector(waitChanged)
-        let waitRow = NSStackView(views: [waitStepper, waitLabel]); waitRow.spacing = 8
-
-        themeCheck.target = self; themeCheck.action = #selector(themeChanged)
-        indicatorCheck.target = self; indicatorCheck.action = #selector(indicatorChanged)
-        soundCheck.target = self; soundCheck.action = #selector(soundChanged)
         neuralCheck.target = self; neuralCheck.action = #selector(neuralChanged)
         neuralESPopup.addItems(withTitles: NeuralVoice.voicesES.map { $0.1 }); neuralESPopup.target = self; neuralESPopup.action = #selector(neuralVoiceChanged(_:))
         neuralENPopup.addItems(withTitles: NeuralVoice.voicesEN.map { $0.1 }); neuralENPopup.target = self; neuralENPopup.action = #selector(neuralVoiceChanged(_:))
         neuralInstall.target = self; neuralInstall.action = #selector(installNeural)
         neuralStatus.font = .systemFont(ofSize: 11); neuralStatus.textColor = .secondaryLabelColor
-        let neuralRow = NSStackView(views: [neuralInstall, neuralStatus]); neuralRow.spacing = 8
-        let neuralHint = NSTextField(wrappingLabelWithString: "Kokoro-82M (licencia Apache 2.0) corre en tu Mac y nada sale de ella. La instalación descarga PyTorch y el modelo (~1 GB) una sola vez. Si el servidor no responde, se usa la voz de Apple.")
-        neuralHint.font = .systemFont(ofSize: 11); neuralHint.textColor = .secondaryLabelColor
-        neuralHint.preferredMaxLayoutWidth = 500
+        for p in [voicePopup, voiceENPopup, neuralESPopup, neuralENPopup] { p.widthAnchor.constraint(equalToConstant: 300).isActive = true }
+        let voiceGrid = grid([
+            [section("Voces de Apple")],
+            [label("En español:"), voicePopup],
+            [label("En inglés:"), voiceENPopup],
+            [label("Velocidad de lectura:"), inline([rateSlider, rateLabel])],
+            [NSGridCell.emptyContentView, inline([test, more])],
+            [note("Las voces Mejorada y Premium se descargan gratis desde Ajustes del Sistema → Accesibilidad → Contenido hablado → Voz del sistema → Gestionar voces. Aparecen aquí al reabrir este panel.")],
+            [section("Voz neuronal (Kokoro, en tu Mac)")],
+            [NSGridCell.emptyContentView, neuralCheck],
+            [label("En español:"), neuralESPopup],
+            [label("En inglés:"), neuralENPopup],
+            [NSGridCell.emptyContentView, inline([neuralInstall, neuralStatus])],
+            [note("Kokoro-82M (licencia Apache 2.0) corre en tu Mac y nada sale de ella. La instalación descarga PyTorch y el modelo (~1 GB) una sola vez. Si el servidor no responde, se usa la voz de Apple.")],
+        ])
 
-        for p in [listenKeyPopup, typeKeyPopup] {
-            p.addItems(withTitles: Controller.hotkeyPresets.map { $0.0 })
-            p.target = self; p.action = #selector(hotkeyChanged(_:))
-        }
+        // Conversación
+        waitStepper.minValue = 3; waitStepper.maxValue = 20; waitStepper.increment = 1
+        waitStepper.target = self; waitStepper.action = #selector(waitChanged)
+        soundCheck.target = self; soundCheck.action = #selector(soundChanged)
         taskEffortPopup.addItems(withTitles: ["Rápida (razona poco)", "Equilibrada", "Cuidadosa (razona mucho)"])
         taskEffortPopup.target = self; taskEffortPopup.action = #selector(taskEffortChanged)
         for (k, p) in modelPopups {
@@ -1137,54 +1258,116 @@ final class SettingsWindow: NSObject {
             p.target = self; p.action = #selector(modelChanged(_:))
             p.identifier = NSUserInterfaceItemIdentifier(k)
         }
-
-        let hint = NSTextField(wrappingLabelWithString: "Las voces Mejorada y Premium se descargan gratis desde Ajustes del Sistema → Accesibilidad → Contenido hablado → Voz del sistema → Gestionar voces. Aparecen aquí al reabrir este panel.")
-        hint.font = .systemFont(ofSize: 11); hint.textColor = .secondaryLabelColor
-        hint.preferredMaxLayoutWidth = 500
-
-        let stack = NSStackView(views: [
-            header("Voz"),
-            row("Voz en español:", voicePopup),
-            row("Voz en inglés:", voiceENPopup),
-            row("Velocidad de lectura:", rateRow),
-            row("", voiceButtons),
-            hint,
-            header("Voz neuronal"),
-            row("", neuralCheck),
-            row("Voz neuronal en español:", neuralESPopup),
-            row("Voz neuronal en inglés:", neuralENPopup),
-            row("", neuralRow),
-            neuralHint,
-            header("Conversación"),
-            row("Espera tras responder:", waitRow),
-            row("", soundCheck),
-            header("Atajos de teclado"),
-            row("Escuchar ahora:", listenKeyPopup),
-            row("Escribir una orden:", typeKeyPopup),
-            header("Widget"),
-            row("", themeCheck),
-            row("", indicatorCheck),
-            header("Modelos"),
-            row("Órdenes simples:", modelPopups["simple"]!),
-            row("Órdenes normales:", modelPopups["normal"]!),
-            row("Cuando pides pensar a fondo:", modelPopups["profundo"]!),
-            row("Velocidad de tareas largas:", taskEffortPopup),
+        for p in [taskEffortPopup, modelPopups["simple"]!, modelPopups["normal"]!, modelPopups["profundo"]!] { p.widthAnchor.constraint(equalToConstant: 240).isActive = true }
+        let convGrid = grid([
+            [section("Escucha")],
+            [label("Espera tras responder:"), inline([waitStepper, waitLabel])],
+            [NSGridCell.emptyContentView, soundCheck],
+            [section("Modelos")],
+            [label("Órdenes simples:"), modelPopups["simple"]!],
+            [label("Órdenes normales:"), modelPopups["normal"]!],
+            [label("Cuando pides pensar a fondo:"), modelPopups["profundo"]!],
+            [label("Velocidad de tareas largas:"), taskEffortPopup],
+            [note("Las órdenes simples (hora, abrir apps, preguntas cortas) usan el modelo ligero; \"piensa bien\" o \"a fondo\" en la orden sube al modelo grande.")],
         ])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 10
-        stack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        let content = NSView()
-        content.addSubview(stack)
+
+        // Widget y atajos
+        themeCheck.target = self; themeCheck.action = #selector(themeChanged)
+        indicatorCheck.target = self; indicatorCheck.action = #selector(indicatorChanged)
+        for p in [listenKeyPopup, typeKeyPopup] {
+            p.addItems(withTitles: Controller.hotkeyPresets.map { $0.0 })
+            p.target = self; p.action = #selector(hotkeyChanged(_:))
+            p.widthAnchor.constraint(equalToConstant: 160).isActive = true
+        }
+        let widgetGrid = grid([
+            [section("Widget")],
+            [NSGridCell.emptyContentView, themeCheck],
+            [NSGridCell.emptyContentView, indicatorCheck],
+            [section("Atajos de teclado")],
+            [label("Escuchar ahora:"), listenKeyPopup],
+            [label("Escribir una orden:"), typeKeyPopup],
+            [note("Esc dos veces seguidas cancela la orden en curso. El botón 🔊 del widget silencia la voz sin dejar de escribir.")],
+        ])
+
+        // Uso
+        let usageGrid = NSGridView(numberOfColumns: 6, rows: 0)
+        usageGrid.rowSpacing = 6; usageGrid.columnSpacing = 18
+        let heads = ["", "Órdenes", "Entrada", "Salida", "Caché", "Costo"]
+        usageGrid.addRow(with: heads.map { h -> NSView in let l = NSTextField(labelWithString: h); l.font = .systemFont(ofSize: 11, weight: .semibold); l.textColor = .secondaryLabelColor; return l })
+        for r in ["Hoy", "Este mes", "Total"] {
+            var views: [NSView] = [{ let l = NSTextField(labelWithString: r); l.font = .systemFont(ofSize: 13, weight: .medium); return l }()]
+            for c in ["turns", "input", "output", "cache", "cost"] {
+                let l = NSTextField(labelWithString: "–"); l.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
+                usageLabels["\(r).\(c)"] = l; views.append(l)
+            }
+            usageGrid.addRow(with: views)
+        }
+        for c in 1..<6 { usageGrid.column(at: c).xPlacement = .trailing }
+        usageModels.rowSpacing = 4; usageModels.columnSpacing = 18
+        let openUsage = NSButton(title: "Abrir uso.json", target: self, action: #selector(openUsageFile))
+        let resetUsage = NSButton(title: "Reiniciar contadores…", target: self, action: #selector(resetUsage))
+        let usageStack = NSStackView(views: [
+            section("Tokens y costo del widget"),
+            usageGrid,
+            section("Por modelo, este mes"),
+            usageModels,
+            inline([openUsage, resetUsage]),
+            note("Cuenta cada orden, tarea y plan que pasa por Claude Code, incluidas las tareas en segundo plano. \"Caché\" es la parte del contexto reutilizada entre turnos (mucho más barata). El costo es el precio de lista de la API que reporta Claude Code; con una suscripción Pro o Max no se cobra aparte, sirve de referencia."),
+        ])
+        usageStack.orientation = .vertical; usageStack.alignment = .leading; usageStack.spacing = 12
+
+        let tv = NSTabView(frame: NSRect(x: 0, y: 0, width: 640, height: 560))
+        tv.addTabViewItem(tab("Voz", voiceGrid))
+        tv.addTabViewItem(tab("Conversación", convGrid))
+        tv.addTabViewItem(tab("Widget y atajos", widgetGrid))
+        tv.addTabViewItem(tab("Uso", usageStack))
+        tv.translatesAutoresizingMaskIntoConstraints = false
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 640, height: 560))
+        content.addSubview(tv)
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: content.topAnchor),
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            tv.topAnchor.constraint(equalTo: content.topAnchor, constant: 12),
+            tv.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14),
+            tv.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14),
+            tv.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14),
         ])
         w.contentView = content
-        w.setContentSize(stack.fittingSize)
+        tabView = tv
+    }
+
+    private func refreshUsage() {
+        let u = UsageStore.shared
+        let rows: [(String, UsageStore.Bucket)] = [("Hoy", u.today), ("Este mes", u.month.0), ("Total", u.total.0)]
+        for (r, b) in rows {
+            usageLabels["\(r).turns"]?.stringValue = "\(b.turns)"
+            usageLabels["\(r).input"]?.stringValue = UsageStore.tokens(b.input)
+            usageLabels["\(r).output"]?.stringValue = UsageStore.tokens(b.output)
+            usageLabels["\(r).cache"]?.stringValue = UsageStore.tokens(b.cacheRead + b.cacheWrite)
+            usageLabels["\(r).cost"]?.stringValue = UsageStore.money(b.cost)
+        }
+        while usageModels.numberOfRows > 0 { usageModels.removeRow(at: 0) }
+        let models = u.month.1.sorted { $0.value.cost > $1.value.cost }
+        if models.isEmpty {
+            usageModels.addRow(with: [note("Todavía no hay uso este mes.")])
+        } else {
+            for (m, b) in models {
+                let name = NSTextField(labelWithString: m); name.font = .systemFont(ofSize: 12, weight: .medium)
+                let detail = NSTextField(labelWithString: "\(b.turns) órdenes · \(UsageStore.tokens(b.tokens)) tokens · \(UsageStore.money(b.cost))")
+                detail.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular); detail.textColor = .secondaryLabelColor
+                usageModels.addRow(with: [name, detail])
+            }
+        }
+    }
+
+    @objc private func openUsageFile() {
+        if !FileManager.default.fileExists(atPath: UsageStore.file.path) { try? "{}".write(to: UsageStore.file, atomically: true, encoding: .utf8) }
+        NSWorkspace.shared.open(UsageStore.file)
+    }
+    @objc private func resetUsage() {
+        let a = NSAlert()
+        a.messageText = "¿Reiniciar los contadores de uso?"
+        a.informativeText = "Se borran los tokens y el costo acumulados en uso.json. No afecta a tu cuenta."
+        a.addButton(withTitle: "Reiniciar"); a.addButton(withTitle: "Cancelar")
+        if a.runModal() == .alertFirstButtonReturn { UsageStore.shared.reset(); refreshUsage() }
     }
 
     func refresh() {
@@ -1230,6 +1413,7 @@ final class SettingsWindow: NSObject {
         let idx = ["haiku": 0, "sonnet": 1, "opus": 2, "default": 3]
         for (k, p) in modelPopups { p.selectItem(at: idx[tiers[k] ?? "default"] ?? 3) }
         refreshNeural()
+        refreshUsage()
     }
 
     private func refreshNeural() {
@@ -2218,6 +2402,8 @@ final class PersistentClaude {
     private var turn: Turn?
     private var textEndedWithNewline = true   // para separar bloques de texto consecutivos
     private var draining = false               // turno interrumpido: se ignora todo hasta su "result"
+    private var usageSeen: [String: UsageStore.Bucket] = [:]   // acumulado por modelo que ya contamos (el result trae totales de sesión)
+    private var costSeen = 0.0
     private var drainTimeout: DispatchWorkItem?
     private var pendingSend: (() -> Void)?     // orden recibida mientras se vaciaba el turno interrumpido
     private var generation = 0
@@ -2231,6 +2417,7 @@ final class PersistentClaude {
 
     /// Arranca (o reinicia) el proceso con el modelo dado, retomando la sesión guardada.
     private func start(model: String?) {
+        usageSeen = [:]; costSeen = 0
         stop()
         let p = Process()
         p.executableURL = URL(fileURLWithPath: claudeBin)
@@ -2386,8 +2573,52 @@ final class PersistentClaude {
         return true
     }
 
+    /// Contabiliza un "result". Los tokens salen del bloque `usage` (es del turno). El costo, de la diferencia de
+    /// `total_cost_usd` (acumulado de sesión); en el primer result del proceso el acumulado incluye la historia
+    /// retomada con --resume, así que se estima proporcionalmente al peso de los tokens del turno.
+    private func account(_ obj: [String: Any]) {
+        guard let usage = obj["usage"] as? [String: Any] else { return }
+        var d = UsageStore.Bucket()
+        d.input = usage["input_tokens"] as? Int ?? 0
+        d.output = usage["output_tokens"] as? Int ?? 0
+        d.cacheRead = usage["cache_read_input_tokens"] as? Int ?? 0
+        d.cacheWrite = usage["cache_creation_input_tokens"] as? Int ?? 0
+        d.turns = 1
+        let mu = obj["modelUsage"] as? [String: [String: Any]] ?? [:]
+        let totalCost = obj["total_cost_usd"] as? Double ?? 0
+        // Modelo del turno: el que creció desde el result anterior; si no, el de más salida acumulada
+        var model: String? = nil; var best = 0
+        for (m, v) in mu {
+            let out = v["outputTokens"] as? Int ?? 0
+            if out - (usageSeen[m]?.output ?? 0) > best { best = out - (usageSeen[m]?.output ?? 0); model = m }
+        }
+        if model == nil { model = mu.max { ($0.value["outputTokens"] as? Int ?? 0) < ($1.value["outputTokens"] as? Int ?? 0) }?.key ?? self.model ?? "Claude" }
+        let weight: (UsageStore.Bucket) -> Double = { Double($0.input) + 5 * Double($0.output) + 0.1 * Double($0.cacheRead) + 1.25 * Double($0.cacheWrite) }
+        if usageSeen.isEmpty {
+            var cum = UsageStore.Bucket()
+            for v in mu.values {
+                cum.input += v["inputTokens"] as? Int ?? 0; cum.output += v["outputTokens"] as? Int ?? 0
+                cum.cacheRead += v["cacheReadInputTokens"] as? Int ?? 0; cum.cacheWrite += v["cacheCreationInputTokens"] as? Int ?? 0
+            }
+            let w = weight(cum)
+            d.cost = w > 0 ? totalCost * min(1, weight(d) / w) : 0
+        } else {
+            d.cost = max(0, totalCost - costSeen)
+        }
+        costSeen = max(costSeen, totalCost)
+        for (m, v) in mu {
+            var b = UsageStore.Bucket()
+            b.input = v["inputTokens"] as? Int ?? 0; b.output = v["outputTokens"] as? Int ?? 0
+            b.cacheRead = v["cacheReadInputTokens"] as? Int ?? 0; b.cacheWrite = v["cacheCreationInputTokens"] as? Int ?? 0
+            usageSeen[m] = b
+        }
+        if usageSeen.isEmpty { usageSeen["_"] = UsageStore.Bucket() }
+        UsageStore.shared.add(model: UsageStore.modelName(model ?? "Claude"), d)
+    }
+
     private func handle(_ obj: [String: Any]) {
         guard let type = obj["type"] as? String else { return }
+        if type == "result" { account(obj) }
         if draining {
             // Restos del turno interrumpido: solo nos interesa su cierre
             if type == "result" {
@@ -2452,6 +2683,11 @@ final class Controller: NSObject {
     var muted: Bool { UserDefaults.standard.bool(forKey: "mutedVoice") }
     private var silent: Bool { typedReply || muted }
     private var muteMenuItem: NSMenuItem?
+    private var usageLine: NSMenuItem!
+    private func updateUsageLine() {
+        let t = UsageStore.shared.today, m = UsageStore.shared.month.0
+        usageLine?.title = "Uso hoy: \(UsageStore.tokens(t.tokens)) tokens · \(UsageStore.money(t.cost))   (mes: \(UsageStore.money(m.cost)))"
+    }
     private var remindersLine: NSMenuItem!
     private var listenMenuItem: NSMenuItem?
     private var typeMenuItem: NSMenuItem?
@@ -3692,6 +3928,11 @@ final class Controller: NSObject {
         remindersLine = NSMenuItem(title: "Sin recordatorios pendientes", action: nil, keyEquivalent: "")
         remindersLine.isEnabled = false
         menu.addItem(remindersLine)
+        usageLine = NSMenuItem(title: "", action: #selector(openSettings), keyEquivalent: "")
+        usageLine.target = self
+        menu.addItem(usageLine)
+        updateUsageLine()
+        UsageStore.shared.onChange = { [weak self] in self?.updateUsageLine() }
         menu.addItem(.separator())
         let settingsItem = NSMenuItem(title: "Ajustes…", action: #selector(openSettings), keyEquivalent: ",")
         settingsItem.target = self
