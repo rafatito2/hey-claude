@@ -1981,15 +1981,30 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
             }
             utt.frames = out.frameLength
             utt.first = false
-            self.player.scheduleBuffer(out, completionCallbackType: .dataRendered) { [weak self] _ in
+            // El aviso de "renderizado" llega cuando el buffer TERMINA; con la frase entera en un buffer el resaltado
+            // arrancaría al final. Se programa una cabecera de 0.1 s con aviso y el resto detrás.
+            let headFrames = min(out.frameLength, AVAudioFrameCount(self.outFormat.sampleRate / 10))
+            let head = self.slice(out, from: 0, count: headFrames)
+            let rest = out.frameLength > headFrames ? self.slice(out, from: headFrames, count: out.frameLength - headFrames) : nil
+            self.player.scheduleBuffer(head ?? out, completionCallbackType: .dataRendered) { [weak self] _ in
                 DispatchQueue.main.async {
                     guard let self, utt.gen == self.generation else { return }
-                    utt.renderStart = Date()
+                    utt.renderStart = Date().addingTimeInterval(-Double(headFrames) / self.outFormat.sampleRate)
                     self.armIfReady(utt)
                 }
             }
+            if let rest, head != nil { self.player.scheduleBuffer(rest) }
             self.finishWrite(utt)
         }
+    }
+
+    /// Copia un tramo de un buffer mono float32.
+    private func slice(_ buf: AVAudioPCMBuffer, from: AVAudioFrameCount, count: AVAudioFrameCount) -> AVAudioPCMBuffer? {
+        guard count > 0, let out = AVAudioPCMBuffer(pcmFormat: buf.format, frameCapacity: count),
+              let src = buf.floatChannelData?[0], let dst = out.floatChannelData?[0] else { return nil }
+        memcpy(dst, src + Int(from), Int(count) * MemoryLayout<Float>.size)
+        out.frameLength = count
+        return out
     }
 
     private func writeApple(_ utt: Utt) {

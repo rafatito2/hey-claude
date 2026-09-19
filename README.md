@@ -8,6 +8,7 @@ Todo corre en tu Mac con **tu propia cuenta de Claude**. No hay servidores inter
 
 ## Qué hace
 
+- **Voz neuronal local (opcional)**: Kokoro-82M (Apache 2.0) corriendo en tu Mac, mucho más natural que las voces de Apple y sin enviar nada fuera. Se instala una vez con `tts/setup_kokoro.sh` (o el botón "Instalar Kokoro…" en Ajustes; descarga PyTorch y el modelo, ~1 GB) y se activa en Ajustes → Voz neuronal. Voces en español e inglés a elegir; si el servidor no responde, la app vuelve sola a la voz de Apple.
 - **Activación por voz** ("hey claude" u "oye claude"), por tecla (⌥⌘C), por clic en el widget o desde Siri con un Atajo. **Silenciar la voz**: botón 🔊 del widget, menú de la barra o diciendo "modo silencio" / "con voz"; Claude sigue escribiendo en el widget pero no habla (útil para no oír narrada toda una tarea). **Esc dos veces** seguidas cancela la orden en curso (mientras escucha, piensa o habla); un Esc solo no hace nada, por si era para otra app.
 - **Conversación continua**: tras cada respuesta sigue escuchando unos segundos; puedes interrumpirlo hablando encima, con el botón ■ del widget, o decir "para".
 - **Respuesta en streaming**: empieza a leer la primera frase mientras genera el resto, resaltando la palabra que va diciendo.
