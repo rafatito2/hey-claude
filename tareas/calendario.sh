@@ -75,13 +75,27 @@ for line in sys.stdin:
     key = (p[1], p[2], p[3], p[4].strip().lower())
     groups.setdefault(key, []).append(p[0])
 dups = {k: v for k, v in groups.items() if len(v) > 1}
-if not dups:
+# Mismo evento en calendarios distintos (p. ej. una suscripción que repite el calendario principal)
+cross = {}
+for (calname, start, end, title), uids in groups.items():
+    cross.setdefault((start, end, title), []).append((calname, uids[0]))
+cross = {k: v for k, v in cross.items() if len(v) > 1}
+if not dups and not cross:
     print("Sin duplicados."); sys.exit(0)
-total = sum(len(v) - 1 for v in dups.values())
-print(f"{len(dups)} grupos duplicados, {total} eventos sobrantes (se conserva uno por grupo):")
-for (calname, start, end, title), uids in sorted(dups.items(), key=lambda x: x[0][1]):
-    print(f"- {title} | {calname} | {start} -> {end} | {len(uids)} copias | borrar: {' '.join(uids[1:])}")
-print("UIDS_A_BORRAR: " + " ".join(u for v in dups.values() for u in v[1:]))
+if dups:
+    total = sum(len(v) - 1 for v in dups.values())
+    print(f"{len(dups)} grupos repetidos dentro del mismo calendario, {total} eventos sobrantes (se conserva uno por grupo):")
+    for (calname, start, end, title), uids in sorted(dups.items(), key=lambda x: x[0][1]):
+        print(f"- {title} | {calname} | {start} -> {end} | {len(uids)} copias | borrar: {' '.join(uids[1:])}")
+    print("UIDS_A_BORRAR: " + " ".join(u for v in dups.values() for u in v[1:]))
+if cross:
+    print(f"{len(cross)} eventos que están en más de un calendario (decidir cuál conservar; si uno es una suscripción, conviene borrar-calendario):")
+    bycal = {}
+    for (start, end, title), pairs in sorted(cross.items()):
+        print(f"- {title} | {start} -> {end} | " + " ; ".join(f"{c}: {u}" for c, u in pairs))
+        for c, u in pairs: bycal.setdefault(c, []).append(u)
+    for c, us in bycal.items():
+        print(f"UIDS_EN_{c.replace(' ', '_')}: " + " ".join(us))
 '
     ;;
   borrar)
