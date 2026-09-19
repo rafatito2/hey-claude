@@ -63,7 +63,7 @@ Reglas:
 - Puedes crear y editar archivos solo en el Escritorio y en Documentos; nunca borrar archivos. Si una acción no está permitida, dilo en una frase en vez de buscar otra forma de hacerla.
 - Para correo usa las herramientas de Gmail (buscar, leer, crear borradores; no puedes enviar). Para Google Calendar usa sus herramientas.
 - Calendarios y Recordatorios de Apple: usa la herramienta \(baseDir.path)/tareas/calendario con Bash (rápida, EventKit). Si responde "sin permiso" usa \(baseDir.path)/tareas/calendario.sh (AppleScript, más lento) con los mismos subcomandos y pide al usuario activar Calendario para Claude Voice en Privacidad. Subcomandos: "calendarios"; "listar DESDE HASTA [calendario]" (uid, calendario, inicio, fin, título, uno por línea); "duplicados DESDE HASTA [calendario]" (grupos con mismo título, inicio y fin, y la línea UIDS_A_BORRAR con los sobrantes); "borrar UID..." (una serie repetitiva se borra entera); "crear \"título\" \"YYYY-MM-DD HH:MM\" \"YYYY-MM-DD HH:MM\" [calendario]"; "borrar-calendario \"nombre\"" (quita un calendario o suscripción entera; confirma siempre antes); "recordatorios [lista]", "recordatorio-crear \"texto\" [\"YYYY-MM-DD HH:MM\"] [lista]", "recordatorio-completar ID". Usa la herramienta, no escribas tu propio AppleScript. Fechas YYYY-MM-DD; si el usuario no dice rango, usa desde hace 3 meses hasta dentro de 12. Borrar eventos SÍ está permitido: si el usuario ya pidió borrar en la orden, hazlo y di cuántos borraste; si solo pidió buscar, di cuántos hay y pregunta si los borras. Antes de borrar más de 30 eventos, resume qué vas a borrar y pide confirmación. Si el script pide permiso de automatización, dile al usuario que acepte el aviso de Calendario. Si antes en esta conversación dijiste que no podías borrar eventos o calendarios, eso ya no aplica: ahora sí puedes con el script. Los eventos de un calendario suscrito (feed) no se pueden borrar uno a uno: ofrece quitar la suscripción entera con borrar-calendario.
-- Mensajes y notificaciones: \(baseDir.path)/tareas/mensajes.sh notificaciones (lo que hay en el Centro de notificaciones), mensajes.sh mensajes [N] [contacto] (últimos mensajes de Mensajes/iMessage; si falla, Claude Voice necesita Acceso total al disco) y mensajes.sh whatsapp [N] [contacto] (últimos mensajes de WhatsApp desde su base local, al instante) y mensajes.sh whatsapp noleidos (chats con mensajes sin leer). Resume lo importante en una o dos frases, sin leer números de teléfono.
+- Mensajes y notificaciones: \(baseDir.path)/tareas/mensajes.sh notificaciones (lo que hay en el Centro de notificaciones), mensajes.sh mensajes [N] [contacto] (últimos mensajes de Mensajes/iMessage; si falla, Claude Voice necesita Acceso total al disco) y mensajes.sh whatsapp [N] [contacto] (últimos mensajes de WhatsApp desde su base local, al instante) y mensajes.sh whatsapp noleidos (chats con mensajes sin leer). Para WhatsApp usa SIEMPRE ese script: nunca WhatsApp Web, Chrome, Accesibilidad ni capturas. Resume lo importante en una o dos frases, sin leer números de teléfono.
 - Memoria personal: sé proactivo. Cuando en la conversación aparezca un dato duradero del usuario (nombre, carrera o universidad, materias, trabajo, intereses, correos, personas cercanas, apps o sitios que usa, preferencias) y no esté ya en el contexto personal, agrégalo como UNA línea corta que empiece con "- " al final de \(contextFile.path) usando Edit. No guardes cosas pasajeras ni repitas lo que ya está. No hace falta anunciarlo salvo que el usuario te lo haya pedido.
 - Habla como en una conversación: frases cortas, la primera frase debe ser útil por sí sola porque se lee en voz alta apenas la escribes.
 - Ejecuta la acción directamente y confirma en una frase corta. No pidas confirmación salvo que sea destructivo.
@@ -3668,22 +3668,44 @@ final class Controller: NSObject {
             logConv("< \(answer)")
             speak(answer, thenIdle: false); return
         }
-        if let m = rx(#"^(?:leeme|lee|revisa|dime|que hay de nuevo en|que tengo en|tengo algo nuevo en|read|check)\s+(?:mis |los |mis ultimos |los ultimos |my |the last )?(?:(\d+)\s+)?(?:mensajes de |mensajes en |chats de |messages from |messages on )?whatsapp(?:\s+(?:de|from|con)\s+(.+))?$|^(?:tengo mensajes (?:nuevos|sin leer) en whatsapp|whatsapp sin leer|any new whatsapp messages)"#).firstMatch(in: n, range: NSRange(location: 0, length: (n as NSString).length)) {
+        if matches(rx(#"\bwhatsapp\b"#), n) && matches(rx(#"\b(mensaje|mensajes|chat|chats|nuevo|nuevos|sin leer|escribio|escribieron|leeme|lee|revisa|revisar|dime|que hay|que tengo|ultimos|ultimo|message|messages|new|unread|read|check)\b"#), n) && !matches(rx(#"\b(envia|enviar|manda|mandar|responde|contesta|escribe a|send|reply)\b"#), n) {
             UsageStore.shared.countLocal()
             logConv("> (local) \(cmd)")
-            func g(_ i: Int) -> String { m.range(at: i).location == NSNotFound ? "" : (n as NSString).substring(with: m.range(at: i)) }
-            let unread = matches(rx(#"\b(nuevos|sin leer|new|unread)\b"#), n)
-            let count = Int(g(1)) ?? 6
-            let who = g(2).trimmingCharacters(in: .whitespaces.union(.punctuationCharacters))
-            let args = unread ? ["whatsapp", "noleidos"] : ["whatsapp", "\(count)", who]
+            let unread = matches(rx(#"\b(nuevos?|sin leer|new|unread)\b"#), n)
+            let count = rx(#"\b(\d+)\b"#).firstMatch(in: n, range: NSRange(location: 0, length: (n as NSString).length)).flatMap { Int((n as NSString).substring(with: $0.range(at: 1))) } ?? 6
+            var who = ""
+            if let m = rx(#"\b(?:de|del|con|from|with)\s+(?!whatsapp\b)([a-z][^,.?]{2,40})$"#).firstMatch(in: n, range: NSRange(location: 0, length: (n as NSString).length)) {
+                who = (n as NSString).substring(with: m.range(at: 1)).replacingOccurrences(of: #"\b(en|de|del) whatsapp\b"#, with: "", options: .regularExpression).trimmingCharacters(in: .whitespaces)
+                if ["mi mac", "la mac", "whatsapp", "hoy", "ayer"].contains(who) { who = "" }
+            }
+            let args = unread ? ["whatsapp", "noleidos"] : ["whatsapp", "\(min(count, 12))", who]
             let out = shell("/bin/bash", [baseDir.appendingPathComponent("tareas/mensajes.sh").path] + args).trimmingCharacters(in: .whitespacesAndNewlines)
+            /// Un mensaje en hebreo, árabe, etc. no se puede leer con las voces en español: se anuncia el idioma en vez de leerlo
+            func readable(_ t: String, isName: Bool = false) -> String {
+                let letters = t.unicodeScalars.filter { CharacterSet.letters.contains($0) }
+                let latin = letters.filter { $0.value < 0x0250 }.count
+                guard letters.count > 2, Double(latin) / Double(letters.count) < 0.5 else { return t }
+                let hebrew = letters.contains { (0x0590...0x05FF).contains($0.value) }
+                let arabic = letters.contains { (0x0600...0x06FF).contains($0.value) }
+                let lang = replyLang == "en" ? (hebrew ? "Hebrew" : arabic ? "Arabic" : "another script") : (hebrew ? "hebreo" : arabic ? "árabe" : "otro alfabeto")
+                if isName { return replyLang == "en" ? "a chat named in \(lang)" : "un chat con nombre en \(lang)" }
+                return replyLang == "en" ? "(message in \(lang))" : "(mensaje en \(lang))"
+            }
             let answer: String
             if out.hasPrefix("No ") || out.hasPrefix("Sin ") { answer = out }
-            else if unread { answer = out.replacingOccurrences(of: "\n- ", with: ". ").replacingOccurrences(of: "\n", with: " ") }
+            else if unread {
+                let lines = out.split(separator: "\n").map(String.init)
+                let items = lines.dropFirst().map { l -> String in
+                    let t = l.replacingOccurrences(of: #"^- "#, with: "", options: .regularExpression).replacingOccurrences(of: #"\s*\([^)]*\)$"#, with: "", options: .regularExpression)
+                    let parts = t.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+                    return parts.count == 2 ? "\(readable(parts[0], isName: true)) \(parts[1])" : t
+                }
+                answer = (lines.first ?? "").replacingOccurrences(of: ":", with: ".") + " " + items.prefix(6).joined(separator: ", ") + (items.count > 6 ? (replyLang == "en" ? " and more." : " y más.") : ".")
+            }
             else {
                 let items = out.split(separator: "\n").map { line -> String in
                     let p = line.split(separator: "|", maxSplits: 2).map { $0.trimmingCharacters(in: .whitespaces) }
-                    return p.count == 3 ? "\(p[1]): \(p[2])" : String(line)
+                    return p.count == 3 ? "\(readable(p[1], isName: true)): \(readable(p[2]))" : String(line)
                 }
                 answer = (replyLang == "en" ? "Latest WhatsApp messages: " : "Últimos mensajes de WhatsApp: ") + items.joined(separator: ". ")
             }

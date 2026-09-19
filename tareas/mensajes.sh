@@ -77,15 +77,20 @@ if arg == "noleidos":
     sys.exit(0)
 n = int(arg)
 rows = con.execute("""
-    select m.ZMESSAGEDATE, m.ZISFROMME, coalesce(s.ZPARTNERNAME, s.ZCONTACTJID), m.ZTEXT, gm.ZCONTACTNAME, s.ZSESSIONTYPE
+    select m.ZMESSAGEDATE, m.ZISFROMME, coalesce(s.ZPARTNERNAME, s.ZCONTACTJID), m.ZTEXT, gm.ZCONTACTNAME, s.ZSESSIONTYPE, s.Z_PK
     from ZWAMESSAGE m
     join ZWACHATSESSION s on s.Z_PK = m.ZCHATSESSION
     left join ZWAGROUPMEMBER gm on gm.Z_PK = m.ZGROUPMEMBER
     where m.ZTEXT is not null and m.ZTEXT != '' and s.ZHIDDEN = 0
-    order by m.ZMESSAGEDATE desc limit 400""").fetchall()
+    order by m.ZMESSAGEDATE desc limit 600""").fetchall()
 out = []
-for ts, from_me, chat, text, member, stype in rows:
+seen_chats = set()
+for ts, from_me, chat, text, member, stype, chat_id in rows:
     if who and who not in (chat or "").lower() and who not in (member or "").lower(): continue
+    # Sin contacto: el último mensaje de cada chat (más útil que N mensajes seguidos del mismo grupo)
+    if not who:
+        if chat_id in seen_chats: continue
+        seen_chats.add(chat_id)
     sender = "yo" if from_me else (f"{chat} ({member})" if member and stype == 1 else chat)
     target = chat if from_me else "yo"
     out.append(f"{when(ts):%Y-%m-%d %H:%M} | {sender} -> {target} | {text.replace(chr(10), ' ')[:300]}")
