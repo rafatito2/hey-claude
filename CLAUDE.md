@@ -16,7 +16,7 @@ Asistente de voz "hey claude" para macOS construido sobre Claude Code. Este arch
 | `install.sh` / `uninstall.sh` | Instalador para usuarios: comprueba requisitos, copia los archivos de ejecución a `~/claude-voice`, compila, registra el LaunchAgent `com.heyclaude.voice` y abre la app. |
 | `ask.sh`, `make_shortcut.py` | Versión mínima por Atajo de Apple (dictado → Claude → voz). Sigue sirviendo para disparar la app desde Siri (`touch ~/claude-voice/.trigger`). |
 | `tts/kokoro_server.py`, `tts/setup_kokoro.sh` | Voz neuronal local opcional (Kokoro-82M). El instalador crea `~/claude-voice/tts/venv` (Python 3.12 con uv, PyTorch, kokoro, modelo de spaCy) y copia el servidor; la app lo arranca y apaga sola (`NeuralVoice`). Log en `~/claude-voice/tts/tts.log`. |
-| `tareas/calendario.sh` | Calendario de Apple por AppleScript: `calendarios`, `listar`, `duplicados` (mismo título+inicio+fin en el mismo calendario; imprime `UIDS_A_BORRAR`), `borrar UID…`, `crear`. Está en `allowedTools` también para la conversación normal; el prompt permite borrar eventos (no archivos) con las reglas de confirmación. |
+| `tareas/calendario.sh` | Calendario de Apple por AppleScript: `calendarios`, `listar`, `duplicados` (mismo título+inicio+fin en el mismo calendario; imprime `UIDS_A_BORRAR`), `borrar UID…`, `crear`, `borrar-calendario "nombre"`. Está en `allowedTools` también para la conversación normal; el prompt permite borrar eventos (no archivos) con las reglas de confirmación. |
 | `tareas/bestmove.sh` | Devuelve la mejor jugada de Stockfish para un FEN. Las tareas de ajedrez lo llaman en vez de hablar con Stockfish directamente. |
 
 ## Ciclo de trabajo

@@ -6,6 +6,7 @@
 #   calendario.sh duplicados DESDE HASTA [calendario]      -> grupos con mismo título+inicio+fin en el mismo calendario; los uid a borrar (se conserva uno)
 #   calendario.sh borrar UID [UID...]                      -> borra esos eventos (una serie repetitiva se borra entera)
 #   calendario.sh crear "título" "INICIO" "FIN" [calendario]
+#   calendario.sh borrar-calendario "nombre"              -> quita un calendario entero (p. ej. una suscripción/feed que sobra)
 set -euo pipefail
 cmd="${1:-}"; shift || true
 
@@ -121,7 +122,17 @@ print("UIDS_A_BORRAR: " + " ".join(u for v in dups.values() for u in v[1:]))
       end tell
     "
     ;;
+  borrar-calendario)
+    name="${1:?falta el nombre del calendario}"
+    osa -e "
+      tell application \"Calendar\"
+        set n to count of (every event of calendar \"$name\")
+        delete calendar \"$name\"
+        return \"Calendario borrado: $name (\" & n & \" eventos)\"
+      end tell
+    "
+    ;;
   *)
-    sed -n '2,9p' "$0"; exit 1
+    sed -n '2,10p' "$0"; exit 1
     ;;
 esac
