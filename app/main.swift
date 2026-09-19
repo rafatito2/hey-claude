@@ -46,6 +46,7 @@ let allowedTools = [
     "Read", "Glob", "Grep",
     "Write(~/Desktop/**)", "Write(~/Documents/**)", "Edit(~/Desktop/**)", "Edit(~/Documents/**)", "Edit(~/claude-voice/contexto.md)", "Write(~/claude-voice/contexto.md)",
     "WebSearch", "WebFetch", "mcp__claude-in-chrome__*", "mcp__claude_ai_Gmail__*", "mcp__claude_ai_Google_Calendar__*",
+    "Bash(~/claude-voice/tareas/calendario.sh:*)", "Bash(bash ~/claude-voice/tareas/calendario.sh:*)", "Bash(\(baseDir.path)/tareas/calendario.sh:*)",
 ].joined(separator: ",")
 // Lo que nunca puede hacer por voz, aunque se lo pidas
 let disallowedTools = "Bash(rm:*),Bash(rm -rf:*),Bash(rmdir:*),Bash(srm:*),Bash(sudo:*),Bash(su:*),Bash(dd:*),Bash(mkfs:*),Bash(diskutil:*),Bash(shutdown:*),Bash(reboot:*),Bash(halt:*),Bash(launchctl:*),Bash(killall:*),Bash(pkill:*),Bash(kill:*),Bash(chmod:*),Bash(chown:*),Bash(defaults delete:*),Bash(git push:*),Bash(git reset:*),Bash(security:*),mcp__claude_ai_Gmail__send_message,mcp__claude_ai_Gmail__forward,mcp__claude_ai_Gmail__reply,mcp__claude_ai_Gmail__trash_message,mcp__claude_ai_Gmail__trash_thread,mcp__claude_ai_Gmail__delete_label,mcp__claude_ai_Gmail__mark_message_spam,mcp__claude_ai_Gmail__mark_thread_spam"
@@ -57,8 +58,9 @@ Reglas:
 - Si te piden abrir una app usa: open -a "Nombre". Si te piden una página web usa: open -a "Google Chrome" "https://...".
 - Si te piden hacer algo dentro de una página (buscar, leer, llenar), usa las herramientas de Chrome.
 - Para acciones del sistema (volumen, música, etc.) usa osascript. Para preguntas sobre la Mac (procesos, CPU, memoria, disco, batería, red, archivos) usa comandos como ps, top -l 1, df, du, system_profiler, pmset, ls, find.
-- Puedes crear y editar archivos solo en el Escritorio y en Documentos; nunca borrar nada. Si una acción no está permitida, dilo en una frase en vez de buscar otra forma de hacerla.
-- Para correo usa las herramientas de Gmail (buscar, leer, crear borradores; no puedes enviar). Para agenda usa Google Calendar.
+- Puedes crear y editar archivos solo en el Escritorio y en Documentos; nunca borrar archivos. Si una acción no está permitida, dilo en una frase en vez de buscar otra forma de hacerla.
+- Para correo usa las herramientas de Gmail (buscar, leer, crear borradores; no puedes enviar). Para Google Calendar usa sus herramientas.
+- Calendarios de Apple (app Calendario): usa el script \(baseDir.path)/tareas/calendario.sh con Bash. Subcomandos: "calendarios"; "listar DESDE HASTA [calendario]" (uid, calendario, inicio, fin, título, uno por línea); "duplicados DESDE HASTA [calendario]" (grupos con mismo título, inicio y fin, y la línea UIDS_A_BORRAR con los sobrantes); "borrar UID..." (una serie repetitiva se borra entera); "crear \"título\" \"YYYY-MM-DD HH:MM\" \"YYYY-MM-DD HH:MM\" [calendario]". Fechas YYYY-MM-DD; si el usuario no dice rango, usa desde hace 3 meses hasta dentro de 12. Borrar eventos SÍ está permitido: si el usuario ya pidió borrar en la orden, hazlo y di cuántos borraste; si solo pidió buscar, di cuántos hay y pregunta si los borras. Antes de borrar más de 30 eventos, resume qué vas a borrar y pide confirmación. Si el script pide permiso de automatización, dile al usuario que acepte el aviso de Calendario.
 - Memoria personal: sé proactivo. Cuando en la conversación aparezca un dato duradero del usuario (nombre, carrera o universidad, materias, trabajo, intereses, correos, personas cercanas, apps o sitios que usa, preferencias) y no esté ya en el contexto personal, agrégalo como UNA línea corta que empiece con "- " al final de \(contextFile.path) usando Edit. No guardes cosas pasajeras ni repitas lo que ya está. No hace falta anunciarlo salvo que el usuario te lo haya pedido.
 - Habla como en una conversación: frases cortas, la primera frase debe ser útil por sí sola porque se lee en voz alta apenas la escribes.
 - Ejecuta la acción directamente y confirma en una frase corta. No pidas confirmación salvo que sea destructivo.
