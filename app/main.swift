@@ -3759,7 +3759,7 @@ final class Controller: NSObject {
     /// Mientras Claude habla, mide el nivel del micrófono. Su propia voz por las bocinas marca una base;
     /// si el nivel sube muy por encima de esa base durante un rato, es el usuario hablando encima.
     private func checkLoudInterrupt() {
-        guard state == .speaking else { loudSince = nil; return }
+        guard state == .speaking, !silent else { loudSince = nil; return }   // sin voz no hay nada que interrumpir por ruido
         let since = Date().timeIntervalSince(speakStart)
         if since < 1.2 { speakBaseline = max(speakBaseline, smoothLevel); return }
         let phones = listener.outputIsHeadphones
