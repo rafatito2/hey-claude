@@ -330,7 +330,60 @@ final class TasksPanel: NSObject {
     }
     private var lastRendered: [LongTask]? = nil
 
-    func render(_ tasks: [LongTask]) {
+    /// Cajita estilo terminal: "$ comando" en verde y la salida en gris, últimos comandos primero los más antiguos.
+    private func terminalBox(_ entries: [TermEntry]) -> NSView {
+        let box = NSView(frame: .zero)
+        box.wantsLayer = true
+        box.layer?.backgroundColor = NSColor(calibratedRed: 0.06, green: 0.07, blue: 0.09, alpha: 0.92).cgColor
+        box.layer?.cornerRadius = 8
+        box.layer?.borderWidth = 0.5
+        box.layer?.borderColor = NSColor.white.withAlphaComponent(0.12).cgColor
+        let text = NSTextView(frame: .zero)
+        text.isEditable = false; text.isSelectable = true
+        text.drawsBackground = false
+        text.textContainerInset = NSSize(width: 10, height: 8)
+        text.textContainer?.lineFragmentPadding = 0
+        text.textContainer?.widthTracksTextView = true
+        text.isVerticallyResizable = true; text.isHorizontallyResizable = false
+        let mono = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        let s = NSMutableAttributedString()
+        let green = NSColor(calibratedRed: 0.45, green: 0.9, blue: 0.55, alpha: 1)
+        let gray = NSColor.white.withAlphaComponent(0.72)
+        let red = NSColor(calibratedRed: 1, green: 0.5, blue: 0.5, alpha: 1)
+        for (i, e) in entries.suffix(3).enumerated() {
+            if i > 0 { s.append(NSAttributedString(string: "\n", attributes: [.font: mono])) }
+            let cmd = e.command.split(separator: "\n").map(String.init).joined(separator: " ")
+            s.append(NSAttributedString(string: "$ ", attributes: [.font: mono, .foregroundColor: green]))
+            s.append(NSAttributedString(string: String(cmd.prefix(160)), attributes: [.font: mono, .foregroundColor: NSColor.white]))
+            if let out = e.output {
+                let lines = out.split(separator: "\n", omittingEmptySubsequences: true).map { String($0.prefix(110)) }
+                let shown = lines.suffix(4)
+                let body = (lines.count > shown.count ? "…\n" : "") + shown.joined(separator: "\n")
+                if !body.isEmpty { s.append(NSAttributedString(string: "\n" + body, attributes: [.font: mono, .foregroundColor: e.failed ? red : gray])) }
+            } else {
+                s.append(NSAttributedString(string: "\n▍ ejecutando…", attributes: [.font: mono, .foregroundColor: NSColor.white.withAlphaComponent(0.5)]))
+            }
+        }
+        text.textStorage?.setAttributedString(s)
+        box.translatesAutoresizingMaskIntoConstraints = false
+        text.translatesAutoresizingMaskIntoConstraints = false
+        box.addSubview(text)
+        let w = width - 40
+        text.textContainer?.containerSize = NSSize(width: w - 20, height: .greatestFiniteMagnitude)
+        text.layoutManager?.ensureLayout(for: text.textContainer!)
+        let h = min(180, max(34, (text.layoutManager?.usedRect(for: text.textContainer!).height ?? 30) + 16))
+        NSLayoutConstraint.activate([
+            box.widthAnchor.constraint(equalToConstant: w),
+            box.heightAnchor.constraint(equalToConstant: h),
+            text.leadingAnchor.constraint(equalTo: box.leadingAnchor),
+            text.trailingAnchor.constraint(equalTo: box.trailingAnchor),
+            text.topAnchor.constraint(equalTo: box.topAnchor),
+            text.bottomAnchor.constraint(equalTo: box.bottomAnchor),
+        ])
+        return box
+    }
+
+    func render(_ tasks: [LongTask], conversationTerminal: [TermEntry] = []) {
         lastRendered = tasks
         applyTheme()
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
@@ -349,6 +402,13 @@ final class TasksPanel: NSObject {
             headerRow.addArrangedSubview(clearButton)
         }
         stack.addArrangedSubview(headerRow)
+        if !conversationTerminal.isEmpty {
+            let box = NSStackView(); box.orientation = .vertical; box.alignment = .leading; box.spacing = 6
+            let running = conversationTerminal.last?.output == nil
+            box.addArrangedSubview(label(running ? "Terminal · ejecutando" : "Terminal", size: 13, weight: .semibold, alpha: 0.8, lines: 1))
+            box.addArrangedSubview(terminalBox(conversationTerminal))
+            stack.addArrangedSubview(box)
+        }
         for t in tasks {
             let box = NSStackView()
             box.orientation = .vertical
@@ -405,6 +465,9 @@ final class TasksPanel: NSObject {
             }
             if let last = t.milestones.last, t.status == .running {
                 box.addArrangedSubview(label("Último hito: \(last)", size: 12, alpha: 0.75, lines: 2))
+            }
+            if t.status == .running, let term = t.process?.terminal, !term.isEmpty, Date().timeIntervalSince(term.last!.at) < 300 {
+                box.addArrangedSubview(terminalBox(term))
             }
             if t.status == .running, thumbnail != nil, thumbView.superview == nil {
                 thumbView.imageScaling = .scaleProportionallyUpOrDown

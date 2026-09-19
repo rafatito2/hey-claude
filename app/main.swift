@@ -2685,6 +2685,15 @@ final class Earcons {
     func reminder() { play(tone([(659.3, 0.11), (830.6, 0.11), (987.8, 0.2)], volume: 0.22)) }
 }
 
+/// Un comando de terminal que Claude ejecutó (o está ejecutando) y su salida, para mostrarlo en el panel.
+struct TermEntry {
+    let id: String
+    let command: String
+    var output: String? = nil
+    var failed = false
+    let at = Date()
+}
+
 // MARK: - Claude Code persistente (un proceso vivo que recibe órdenes en streaming)
 
 final class PersistentClaude {
@@ -2696,6 +2705,10 @@ final class PersistentClaude {
     private let extraPrompt: String
     private let ownSession: Bool
     var kind: String { ownSession ? "Tareas" : "Conversación" }
+    /// Últimos comandos de terminal de este proceso (Bash), con su salida cuando llega.
+    private(set) var terminal: [TermEntry] = []
+    var onTerminal: (() -> Void)?
+    var isRunningCommand: Bool { terminal.last.map { $0.output == nil && Date().timeIntervalSince($0.at) < 120 } ?? false }
     private var ownSid: String? = nil
     /// "low" / "medium" / "high": cuánto razona el modelo. Cambiarlo reinicia el proceso en la siguiente orden.
     var effort: String? = nil
@@ -2967,6 +2980,23 @@ final class PersistentClaude {
                 let name = block["name"] as? String ?? ""
                 let input = block["input"] as? [String: Any] ?? [:]
                 turn?.onStatus(toolLabel(name, input))
+                if name == "Bash", let cmd = input["command"] as? String, let id = block["id"] as? String {
+                    terminal.append(TermEntry(id: id, command: cmd))
+                    if terminal.count > 12 { terminal.removeFirst(terminal.count - 12) }
+                    onTerminal?()
+                }
+            }
+        } else if type == "user", let msg = obj["message"] as? [String: Any],
+                  let content = msg["content"] as? [[String: Any]] {
+            // Resultados de herramientas: la salida del comando
+            for block in content where (block["type"] as? String) == "tool_result" {
+                guard let id = block["tool_use_id"] as? String, let i = terminal.firstIndex(where: { $0.id == id }) else { continue }
+                var text = ""
+                if let str = block["content"] as? String { text = str }
+                else if let parts = block["content"] as? [[String: Any]] { text = parts.compactMap { $0["text"] as? String }.joined(separator: "\n") }
+                terminal[i].output = String(text.suffix(1500))
+                terminal[i].failed = (block["is_error"] as? Bool) ?? false
+                onTerminal?()
             }
         } else if type == "result" {
             let reply = obj["result"] as? String
@@ -3110,6 +3140,7 @@ final class Controller: NSObject {
         settingsWindow.controller = self
         historyWindow.controller = self
         tasks.onChange = { [weak self] in self?.refreshTasksPanel() }
+        claude.onTerminal = { [weak self] in self?.refreshTasksPanel() }
         tasks.announce = { [weak self] text in self?.announce(text) }
         tasksPanel.onCancelId = { [weak self] id in
             guard let self, let t = self.tasks.tasks.first(where: { $0.id == id }) else { return }
@@ -4322,6 +4353,7 @@ final class Controller: NSObject {
         let t = LongTask(title: cmd, timeout: taskTimeout(from: n))
         let fast = matches(rx(#"\b(rapido|rapida|apurate|date prisa|faster|hurry|quick|quickly)\b"#), n)
         let proc = PersistentClaude(tools: allowedTools + "," + taskExtraTools, extraPrompt: taskPrompt, ownSession: true, effort: fast ? "low" : taskEffort)
+        proc.onTerminal = { [weak self] in self?.tasks.onChange?() }
         t.process = proc
         tasks.add(t)
         state = .thinking
@@ -4388,6 +4420,7 @@ final class Controller: NSObject {
         // El proceso actual se queda con la tarea; la conversación sigue en uno nuevo (sesión nueva)
         let taskProc = claude
         claude = PersistentClaude()
+        claude.onTerminal = { [weak self] in self?.refreshTasksPanel() }
         clearSession()
         logConv("--- la orden pasó a segundo plano; nueva conversación ---")
         tasks.add(t)
@@ -4485,8 +4518,11 @@ final class Controller: NSObject {
         let visible = tasks.tasks.filter { t in
             t.status == .running || t.status == .planning || t.status == .waiting || Date().timeIntervalSince(t.startedAt) < 15 * 60
         }
-        if visible.isEmpty || !showTasksPanel || panelDismissed { tasksPanel.hide(); return }
-        tasksPanel.render(visible)
+        // Terminal de la conversación: se muestra mientras piensa y hasta 20 s después del último comando
+        let convTerm = claude.terminal.filter { Date().timeIntervalSince($0.at) < 300 }
+        let showConv = !convTerm.isEmpty && (state == .thinking || state == .speaking || Date().timeIntervalSince(convTerm.last!.at) < 20)
+        if (visible.isEmpty && !showConv) || !showTasksPanel || panelDismissed { tasksPanel.hide(); return }
+        tasksPanel.render(visible, conversationTerminal: showConv ? convTerm : [])
         tasksPanel.show(above: overlay.panel.frame)
     }
 
