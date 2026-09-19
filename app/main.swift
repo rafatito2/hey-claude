@@ -47,6 +47,8 @@ let allowedTools = [
     "Write(~/Desktop/**)", "Write(~/Documents/**)", "Edit(~/Desktop/**)", "Edit(~/Documents/**)", "Edit(~/claude-voice/contexto.md)", "Write(~/claude-voice/contexto.md)",
     "WebSearch", "WebFetch", "mcp__claude-in-chrome__*", "mcp__claude_ai_Gmail__*", "mcp__claude_ai_Google_Calendar__*",
     "Bash(~/claude-voice/tareas/calendario.sh:*)", "Bash(bash ~/claude-voice/tareas/calendario.sh:*)", "Bash(\(baseDir.path)/tareas/calendario.sh:*)",
+    "Bash(~/claude-voice/tareas/calendario:*)", "Bash(\(baseDir.path)/tareas/calendario:*)",
+    "Bash(~/claude-voice/tareas/mensajes.sh:*)", "Bash(bash ~/claude-voice/tareas/mensajes.sh:*)", "Bash(\(baseDir.path)/tareas/mensajes.sh:*)",
 ].joined(separator: ",")
 // Lo que nunca puede hacer por voz, aunque se lo pidas
 let disallowedTools = "Bash(rm:*),Bash(rm -rf:*),Bash(rmdir:*),Bash(srm:*),Bash(sudo:*),Bash(su:*),Bash(dd:*),Bash(mkfs:*),Bash(diskutil:*),Bash(shutdown:*),Bash(reboot:*),Bash(halt:*),Bash(launchctl:*),Bash(killall:*),Bash(pkill:*),Bash(kill:*),Bash(chmod:*),Bash(chown:*),Bash(defaults delete:*),Bash(git push:*),Bash(git reset:*),Bash(security:*),mcp__claude_ai_Gmail__send_message,mcp__claude_ai_Gmail__forward,mcp__claude_ai_Gmail__reply,mcp__claude_ai_Gmail__trash_message,mcp__claude_ai_Gmail__trash_thread,mcp__claude_ai_Gmail__delete_label,mcp__claude_ai_Gmail__mark_message_spam,mcp__claude_ai_Gmail__mark_thread_spam"
@@ -60,7 +62,8 @@ Reglas:
 - Para acciones del sistema (volumen, música, etc.) usa osascript. Para preguntas sobre la Mac (procesos, CPU, memoria, disco, batería, red, archivos) usa comandos como ps, top -l 1, df, du, system_profiler, pmset, ls, find.
 - Puedes crear y editar archivos solo en el Escritorio y en Documentos; nunca borrar archivos. Si una acción no está permitida, dilo en una frase en vez de buscar otra forma de hacerla.
 - Para correo usa las herramientas de Gmail (buscar, leer, crear borradores; no puedes enviar). Para Google Calendar usa sus herramientas.
-- Calendarios de Apple (app Calendario): usa el script \(baseDir.path)/tareas/calendario.sh con Bash. Subcomandos: "calendarios"; "listar DESDE HASTA [calendario]" (uid, calendario, inicio, fin, título, uno por línea); "duplicados DESDE HASTA [calendario]" (grupos con mismo título, inicio y fin, y la línea UIDS_A_BORRAR con los sobrantes); "borrar UID..." (una serie repetitiva se borra entera); "crear \"título\" \"YYYY-MM-DD HH:MM\" \"YYYY-MM-DD HH:MM\" [calendario]"; "borrar-calendario \"nombre\"" (quita un calendario o suscripción entera; confirma siempre antes). Usa el script, no escribas tu propio AppleScript. Fechas YYYY-MM-DD; si el usuario no dice rango, usa desde hace 3 meses hasta dentro de 12. Borrar eventos SÍ está permitido: si el usuario ya pidió borrar en la orden, hazlo y di cuántos borraste; si solo pidió buscar, di cuántos hay y pregunta si los borras. Antes de borrar más de 30 eventos, resume qué vas a borrar y pide confirmación. Si el script pide permiso de automatización, dile al usuario que acepte el aviso de Calendario. Si antes en esta conversación dijiste que no podías borrar eventos o calendarios, eso ya no aplica: ahora sí puedes con el script. Los eventos de un calendario suscrito (feed) no se pueden borrar uno a uno: ofrece quitar la suscripción entera con borrar-calendario.
+- Calendarios y Recordatorios de Apple: usa la herramienta \(baseDir.path)/tareas/calendario con Bash (rápida, EventKit). Si responde "sin permiso" usa \(baseDir.path)/tareas/calendario.sh (AppleScript, más lento) con los mismos subcomandos y pide al usuario activar Calendario para Claude Voice en Privacidad. Subcomandos: "calendarios"; "listar DESDE HASTA [calendario]" (uid, calendario, inicio, fin, título, uno por línea); "duplicados DESDE HASTA [calendario]" (grupos con mismo título, inicio y fin, y la línea UIDS_A_BORRAR con los sobrantes); "borrar UID..." (una serie repetitiva se borra entera); "crear \"título\" \"YYYY-MM-DD HH:MM\" \"YYYY-MM-DD HH:MM\" [calendario]"; "borrar-calendario \"nombre\"" (quita un calendario o suscripción entera; confirma siempre antes); "recordatorios [lista]", "recordatorio-crear \"texto\" [\"YYYY-MM-DD HH:MM\"] [lista]", "recordatorio-completar ID". Usa la herramienta, no escribas tu propio AppleScript. Fechas YYYY-MM-DD; si el usuario no dice rango, usa desde hace 3 meses hasta dentro de 12. Borrar eventos SÍ está permitido: si el usuario ya pidió borrar en la orden, hazlo y di cuántos borraste; si solo pidió buscar, di cuántos hay y pregunta si los borras. Antes de borrar más de 30 eventos, resume qué vas a borrar y pide confirmación. Si el script pide permiso de automatización, dile al usuario que acepte el aviso de Calendario. Si antes en esta conversación dijiste que no podías borrar eventos o calendarios, eso ya no aplica: ahora sí puedes con el script. Los eventos de un calendario suscrito (feed) no se pueden borrar uno a uno: ofrece quitar la suscripción entera con borrar-calendario.
+- Mensajes y notificaciones: \(baseDir.path)/tareas/mensajes.sh notificaciones (lo que hay en el Centro de notificaciones) y mensajes.sh mensajes [N] [contacto] (últimos mensajes de Mensajes/iMessage; si falla, Claude Voice necesita Acceso total al disco). Resume lo importante en una o dos frases, sin leer números de teléfono.
 - Memoria personal: sé proactivo. Cuando en la conversación aparezca un dato duradero del usuario (nombre, carrera o universidad, materias, trabajo, intereses, correos, personas cercanas, apps o sitios que usa, preferencias) y no esté ya en el contexto personal, agrégalo como UNA línea corta que empiece con "- " al final de \(contextFile.path) usando Edit. No guardes cosas pasajeras ni repitas lo que ya está. No hace falta anunciarlo salvo que el usuario te lo haya pedido.
 - Habla como en una conversación: frases cortas, la primera frase debe ser útil por sí sola porque se lee en voz alta apenas la escribes.
 - Ejecuta la acción directamente y confirma en una frase corta. No pidas confirmación salvo que sea destructivo.
@@ -3225,6 +3228,7 @@ final class Controller: NSObject {
             // Palabras que oye y que NO están en lo que Claude está leyendo = el usuario está hablando
             let own = Set(normalize(overlayLastReply).split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
             let foreign = words.filter { $0.count > 2 && !own.contains($0) && Int($0) == nil }
+            if !foreign.isEmpty { lastForeignSpeechAt = Date() }   // el reconocedor oyó algo que no es la voz de Claude
             let userTalking = foreign.count >= 2 && Double(foreign.count) / Double(max(words.count, 1)) >= 0.5
             let stopWordIsForeign = matches(stopRegex, n) && words.contains { !own.contains($0) && matches(stopRegex, $0) }
             if (words.count <= 3 && stopWordIsForeign) || commandAfterWake(text) != nil || userTalking {
@@ -3401,6 +3405,36 @@ final class Controller: NSObject {
             if typeIntoFrontApp(text) { speak(replyLang == "en" ? "Done." : "Listo.", thenIdle: false) }
             else { speak(replyLang == "en" ? "To type for you I need Accessibility access. I opened the request in System Settings." : "Para escribir por ti necesito el permiso de Accesibilidad. Te abrí la solicitud en Ajustes del Sistema.", thenIdle: false) }
             return
+        }
+        if matches(rx(#"^(leeme|lee|dime|cuales son|que) (las |mis )?notificaciones|^(que notificaciones tengo|tengo notificaciones|read my notifications|what notifications do i have|any notifications)\b"#), n) {
+            UsageStore.shared.countLocal()
+            logConv("> (local) \(cmd)")
+            let out = shell("/bin/bash", [baseDir.appendingPathComponent("tareas/mensajes.sh").path, "notificaciones"]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let lines = out.split(separator: "\n").map { String($0).trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            let answer = lines.isEmpty || out.hasPrefix("Sin ") ? (replyLang == "en" ? "No notifications right now." : "No hay notificaciones a la vista.")
+                : (replyLang == "en" ? "You have \(lines.count): " : "Tienes \(lines.count): ") + lines.prefix(5).joined(separator: ". ") + "."
+            logConv("< \(answer)")
+            speak(answer, thenIdle: false); return
+        }
+        if let m = rx(#"^(leeme|lee|dime|cual es|que dice) (el ultimo mensaje|los ultimos (\d+) mensajes|el ultimo (whatsapp|imessage|sms|texto))(?: de (.+))?$|^(read|what's) (my last message|the last message|my last (\d+) messages)(?: from (.+))?$"#).firstMatch(in: n, range: NSRange(location: 0, length: (n as NSString).length)) {
+            UsageStore.shared.countLocal()
+            logConv("> (local) \(cmd)")
+            func g(_ i: Int) -> String { m.range(at: i).location == NSNotFound ? "" : (n as NSString).substring(with: m.range(at: i)) }
+            let count = Int(g(3)) ?? Int(g(8)) ?? 1
+            let who = g(5).isEmpty ? g(9) : g(5)
+            let out = shell("/bin/bash", [baseDir.appendingPathComponent("tareas/mensajes.sh").path, "mensajes", "\(count)", who]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let answer: String
+            if out.hasPrefix("No puedo leer") { answer = replyLang == "en" ? "I can't read Messages yet: give Claude Voice Full Disk Access in System Settings, Privacy and Security." : "Todavía no puedo leer Mensajes: dale a Claude Voice Acceso total al disco en Ajustes del Sistema, Privacidad y seguridad." }
+            else if out.hasPrefix("No hay") { answer = out }
+            else {
+                let items = out.split(separator: "\n").map { line -> String in
+                    let p = line.split(separator: "|", maxSplits: 2).map { $0.trimmingCharacters(in: .whitespaces) }
+                    return p.count == 3 ? "\(p[1]): \(p[2])" : String(line)
+                }
+                answer = items.joined(separator: ". ")
+            }
+            logConv("< \(answer.prefix(300))")
+            speak(answer, thenIdle: false); return
         }
         if let answer = macControl(n, original: cmd) {
             UsageStore.shared.countLocal()
@@ -3758,15 +3792,20 @@ final class Controller: NSObject {
 
     /// Mientras Claude habla, mide el nivel del micrófono. Su propia voz por las bocinas marca una base;
     /// si el nivel sube muy por encima de esa base durante un rato, es el usuario hablando encima.
+    private var lastForeignSpeechAt = Date.distantPast
     private func checkLoudInterrupt() {
         guard state == .speaking, !silent else { loudSince = nil; return }   // sin voz no hay nada que interrumpir por ruido
         let since = Date().timeIntervalSince(speakStart)
         if since < 1.2 { speakBaseline = max(speakBaseline, smoothLevel); return }
         let phones = listener.outputIsHeadphones
         let threshold = phones ? max(0.07, speakBaseline * 1.3) : max(0.16, speakBaseline * 1.5)
+        // Volumen alto + palabras ajenas recientes = el usuario habla (corte rápido). Solo volumen (puerta, tos, música):
+        // hace falta que dure bastante más, para no cortar por ruidos.
+        let heardUser = Date().timeIntervalSince(lastForeignSpeechAt) < 2.0
+        let needed: TimeInterval = heardUser ? (phones ? 0.3 : 0.45) : 1.5
         if smoothLevel > threshold {
             if loudSince == nil { loudSince = Date() }
-            else if Date().timeIntervalSince(loudSince!) > (phones ? 0.3 : 0.45) {
+            else if Date().timeIntervalSince(loudSince!) > needed {
                 logApp(String(format: "Interrumpido por volumen: nivel %.2f, base %.2f", smoothLevel, speakBaseline))
                 loudSince = nil
                 interrupt()

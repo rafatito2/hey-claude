@@ -9,7 +9,8 @@ Todo corre en tu Mac con **tu propia cuenta de Claude**. No hay servidores inter
 ## Qué hace
 
 - **Voz neuronal local (opcional)**: Kokoro-82M (Apache 2.0) corriendo en tu Mac, mucho más natural que las voces de Apple y sin enviar nada fuera. Se instala una vez con `tts/setup_kokoro.sh` (o el botón "Instalar Kokoro…" en Ajustes; descarga PyTorch y el modelo, ~1 GB) y se activa en Ajustes → Voz neuronal. Voces en español e inglés a elegir; si el servidor no responde, la app vuelve sola a la voz de Apple.
-- **Calendario de Apple**: "busca eventos duplicados en mi calendario y bórralos", "qué tengo el jueves", "crea una cita el lunes a las 10". Usa la app Calendario por AppleScript (`tareas/calendario.sh`); la primera vez macOS pide permiso para controlar Calendario. También puede quitar un calendario o suscripción entera ("borra el calendario de Facebook"), siempre confirmando. Borrar eventos está permitido: si solo pides buscar, te dice cuántos hay y pregunta; con más de 30 resume y confirma.
+- **Mensajes y notificaciones**: "¿qué notificaciones tengo?" lee el Centro de notificaciones; "léeme el último mensaje" o "los últimos 3 mensajes de Ana" leen Mensajes/iMessage (requiere Acceso total al disco para Claude Voice). Sin modelo, al instante.
+- **Calendario de Apple**: "busca eventos duplicados en mi calendario y bórralos", "qué tengo el jueves", "crea una cita el lunes a las 10". Usa EventKit (`tareas/calendario`, compilado por build.sh: calendarios, eventos, duplicados y también Recordatorios) y, si falta el permiso, la app Calendario por AppleScript (`tareas/calendario.sh`). La primera vez macOS pide permiso de Calendario para Claude Voice. También puede quitar un calendario o suscripción entera ("borra el calendario de Facebook"), siempre confirmando. Borrar eventos está permitido: si solo pides buscar, te dice cuántos hay y pregunta; con más de 30 resume y confirma.
 - **Manos libres para el Mac**, sin pasar por el modelo: "sube el brillo", "volumen al 30", "silencia la Mac", "bloquea la pantalla", "apaga la pantalla", "pon a dormir la Mac", "cierra Safari", "cierra todo menos Chrome", "pausa la música", "siguiente canción", "expulsa los discos", "conecta los AirPods" (con `blueutil`), "activa no molestar" (con un Atajo llamado "No molestar").
 - **Ojos**: "¿qué es esto?", "¿qué dice aquí?", "explícame esto" capturan la ventana activa y responden sobre lo que se ve; "esta zona" deja que marques un área con el mouse. "En mi pantalla…" captura la pantalla completa. Requiere permiso de Grabación de pantalla.
 - **Historial por voz**: "¿qué me dijiste ayer sobre las facturas?" busca en el historial y te lo lee, con la hora.
@@ -51,6 +52,10 @@ Hey Claude no tiene inicio de sesión propio: usa la sesión de **Claude Code**,
 3. Ejecuta el instalador de abajo. Comprueba que la sesión exista y, si no, te lo dice.
 
 Cada orden de voz corre con tu cuenta y tu suscripción. La app no guarda credenciales ni necesita API key. Para cambiar de cuenta, vuelve a `claude` y usa `/logout` y luego inicia sesión de nuevo; la app usa la sesión que tenga Claude Code.
+
+## Firma estable (recomendado)
+
+La app se firma ad hoc por defecto, y cada compilación cambia su huella: macOS puede olvidar permisos como Grabación de pantalla. `app/make_identity.sh` crea una vez un certificado propio "Hey Claude Dev" en tu llavero (pide tu contraseña para confiar en él) y desde entonces `build.sh` firma con él y los permisos se conservan. La primera compilación firmada pedirá los permisos una última vez.
 
 ## Instalación
 

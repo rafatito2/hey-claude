@@ -32,7 +32,7 @@ mkdir -p "$DIR/tareas"
 if [[ "$SRC" != "$DIR" ]]; then
   say_step "Copiando los archivos de ejecución a $DIR"
   cp "$SRC/ask.sh" "$SRC/make_shortcut.py" "$DIR/"
-  cp "$SRC/tareas/bestmove.sh" "$SRC/tareas/calendario.sh" "$DIR/tareas/"
+  cp "$SRC/tareas/bestmove.sh" "$SRC/tareas/calendario.sh" "$SRC/tareas/mensajes.sh" "$DIR/tareas/"
   mkdir -p "$DIR/tts" && cp "$SRC/tts/setup_kokoro.sh" "$SRC/tts/kokoro_server.py" "$DIR/tts/"
   cp "$SRC/contexto.example.md" "$SRC/vocabulario.example.txt" "$SRC/correcciones.example.txt" "$DIR/"
 fi

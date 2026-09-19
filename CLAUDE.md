@@ -16,6 +16,9 @@ Asistente de voz "hey claude" para macOS construido sobre Claude Code. Este arch
 | `install.sh` / `uninstall.sh` | Instalador para usuarios: comprueba requisitos, copia los archivos de ejecución a `~/claude-voice`, compila, registra el LaunchAgent `com.heyclaude.voice` y abre la app. |
 | `ask.sh`, `make_shortcut.py` | Versión mínima por Atajo de Apple (dictado → Claude → voz). Sigue sirviendo para disparar la app desde Siri (`touch ~/claude-voice/.trigger`). |
 | `tts/kokoro_server.py`, `tts/setup_kokoro.sh` | Voz neuronal local opcional (Kokoro-82M). El instalador crea `~/claude-voice/tts/venv` (Python 3.12 con uv, PyTorch, kokoro, modelo de spaCy) y copia el servidor; la app lo arranca y apaga sola (`NeuralVoice`). Log en `~/claude-voice/tts/tts.log`. |
+| `tareas/calendario.swift` + `calendario-Info.plist` | Herramienta EventKit (`~/claude-voice/tareas/calendario`, compilada y firmada por build.sh con el plist embebido por `-sectcreate` para que TCC acepte la petición): calendarios, listar, duplicados (mismo calendario y entre calendarios), borrar, crear, borrar-calendario, recordatorios. Código 2 si falta permiso; el prompt cae entonces a `calendario.sh`. |
+| `tareas/mensajes.sh` | `notificaciones` (Centro de notificaciones por System Events) y `mensajes [N] [contacto]` (chat.db de Mensajes por sqlite; requiere Acceso total al disco; decodifica `attributedBody`). Rutas locales "qué notificaciones tengo" y "léeme el último mensaje". |
+| `app/make_identity.sh` | Certificado propio "Hey Claude Dev" para firmar; build.sh lo usa si existe, si no firma ad hoc. |
 | `tareas/calendario.sh` | Calendario de Apple por AppleScript: `calendarios`, `listar`, `duplicados` (mismo título+inicio+fin en el mismo calendario; imprime `UIDS_A_BORRAR`), `borrar UID…`, `crear`, `borrar-calendario "nombre"`. Está en `allowedTools` también para la conversación normal; el prompt permite borrar eventos (no archivos) con las reglas de confirmación. |
 | `tareas/bestmove.sh` | Devuelve la mejor jugada de Stockfish para un FEN. Las tareas de ajedrez lo llaman en vez de hablar con Stockfish directamente. |
 
@@ -78,6 +81,7 @@ Commits: mensaje en español, sin líneas de atribución de Claude (regla global
 9. **Kokoro necesita el modelo de spaCy instalado a mano** (`en_core_web_sm`): si falta, misaki intenta instalarlo con `uv pip` fuera del venv y falla; el servidor corre con `VIRTUAL_ENV` apuntando al venv por lo mismo.
 10. **Los avisos de `scheduleBuffer` llegan cuando el buffer termina**, no cuando empieza: con la voz neuronal (frase entera en un buffer) el resaltado arrancaba al final. Se programa una cabecera de 0.1 s con aviso y el resto detrás.
 11. **`NSGridView.removeRow` no quita las vistas de la jerarquía**: al refrescar la tabla por modelo de Uso hay que hacer `removeFromSuperview` a cada celda antes, o los textos se apilan.
+13. **Interrupción por volumen solo con palabras ajenas recientes**: un pico de nivel (puerta, tos) interrumpía a Claude; ahora el corte rápido exige que el reconocedor haya oído palabras que no son de la respuesta en los últimos 2 s, y sin eso hacen falta 1.5 s de ruido sostenido.
 12. **La sesión retomada arrastra negativas viejas**: como el proceso arranca con `--resume`, si el modelo dijo antes "no puedo borrar eventos", lo repite aunque el prompt nuevo lo permita. Al cambiar permisos en el prompt, decir "nueva conversación" (o incluir en el prompt que lo anterior ya no aplica, como hace la regla de calendario).
 
 ## Pendientes conocidos
